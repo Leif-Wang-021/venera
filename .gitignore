@@ -1,0 +1,20 @@
+# ---- personal session archives ----
+*.zip
+dsh-session-*.zip
+session.jsonl
+
+# ---- git history backups ----
+.git_backups/
+
+# ---- build / tooling artifacts ----
+build/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.idea/
+*.iml
+
+# ---- OS junk ----
+.DS_Store
+Thumbs.db
+desktop.ini

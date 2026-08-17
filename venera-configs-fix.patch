@@ -1,0 +1,357 @@
+diff --git a/copy_manga.js b/copy_manga.js
+index 1e65d8a..94d4ca7 100644
+--- a/copy_manga.js
++++ b/copy_manga.js
+@@ -4,7 +4,7 @@ class CopyManga extends ComicSource {
+ 
+     key = "copy_manga"
+ 
+-    version = "1.4.1"
++    version = "1.4.2"
+ 
+     minAppVersion = "1.6.0"
+ 
+@@ -51,13 +51,13 @@ class CopyManga extends ComicSource {
+         )
+ 
+         return {
+-            "User-Agent": `COPY/3.0.6`,
++            "User-Agent": `COPY/3.0.9`,
+             "source": "copyApp",
+             "deviceinfo": this.deviceinfo,
+             "dt": `${year}.${month}.${day}`,
+             "platform": "3",
+-            "referer": `com.copymanga.app-3.0.6`,
+-            "version": "3.0.6",
++            "referer": `com.copymanga.app-3.0.9`,
++            "version": "3.0.9",
+             "device": this.device,
+             "pseudoid": this.pseudoid,
+             "Accept": "application/json",
+@@ -77,7 +77,7 @@ class CopyManga extends ComicSource {
+ 
+     static defaultImageQuality = "1500"
+ 
+-    static defaultApiUrl = 'api.copy2000.online'
++    static defaultApiUrl = 'api.copy202601.com'
+ 
+     static searchApi = "/api/kb/web/searchb/comics"
+ 
+@@ -711,7 +711,14 @@ class CopyManga extends ComicSource {
+             ])
+ 
+             if (results[0].status !== 200) {
+-                throw `Invalid status code: ${res.status}`;
++                let message = `Invalid status code: ${results[0].status}`;
++                try {
++                    let body = JSON.parse(results[0].body);
++                    if (body.message) {
++                        message = body.message;
++                    }
++                } catch (e) {}
++                throw message;
+             }
+ 
+             let data = JSON.parse(results[0].body).results;
+@@ -755,6 +762,8 @@ class CopyManga extends ComicSource {
+ 
+             while (attempt < maxAttempts) {
+                 try {
++                    // 限制章节请求频率，避免触发拷贝漫画风控
++                    await new Promise((resolve) => setTimeout(resolve, 1200));
+                     let reqId = await this.getReqID();
+                     res = await Network.get(
+                         `${this.apiUrl}/api/v3/comic/${comicId}/chapter2/${epId}?in_mainland=true&request_id=${reqId}`,
+@@ -766,22 +775,44 @@ class CopyManga extends ComicSource {
+                     if (res.status === 210) {
+                         // 210 indicates too frequent access, extract wait time
+                         let waitTime = 40000; // Default wait time 40s
++                        let serverMessage = "";
++                        let blocked = false;
+                         try {
+                             let responseBody = JSON.parse(res.body);
+-                            if (
+-                                responseBody.message &&
+-                                responseBody.message.includes("Expected available in")
+-                            ) {
+-                                let match = responseBody.message.match(/(\d+)\s*seconds/);
++                            serverMessage = responseBody.message || "";
++                            if (serverMessage.includes("copy3000.com/download") || serverMessage.includes("破解版本") || serverMessage.includes("破解版")) {
++                                blocked = true;
++                            }
++                            if (responseBody.message) {
++                                // English: "Expected available in X seconds"
++                                let match = responseBody.message.match(/Expected available in (\d+)\s*seconds/);
++                                // Chinese: "等待1小時" / "等待30分钟" / "等待30秒"
++                                let zhMatch = responseBody.message.match(/等待(\d+)\s*(小時|小时|分鐘|分钟|秒)/);
+                                 if (match && match[1]) {
+                                     waitTime = parseInt(match[1]) * 1000;
++                                } else if (zhMatch && zhMatch[1]) {
++                                    let num = parseInt(zhMatch[1]);
++                                    if (zhMatch[2] === "小時" || zhMatch[2] === "小时") {
++                                        waitTime = num * 3600000;
++                                    } else if (zhMatch[2] === "分鐘" || zhMatch[2] === "分钟") {
++                                        waitTime = num * 60000;
++                                    } else {
++                                        waitTime = num * 1000;
++                                    }
+                                 }
+                             }
++                            // Cap at 30 minutes to avoid excessive waiting
++                            waitTime = Math.min(waitTime, 1800000);
+                         } catch (e) {
+                             console.log(
+                                 "Unable to parse wait time, using default wait time 40s"
+                             );
+                         }
++                        if (blocked) {
++                            // 服务器风控/限流：等待更长时间后重试，而不是立即失败
++                            waitTime = Math.max(waitTime, 30000);
++                            console.log(`拷贝漫画服务器限制，等待 ${waitTime / 1000}s 后重试`);
++                        }
+                         console.log(`Chapter${epId} access too frequent, waiting ${waitTime / 1000}s`);
+                         await new Promise((resolve) => setTimeout(resolve, waitTime));
+                         throw "Retry";
+@@ -792,6 +823,9 @@ class CopyManga extends ComicSource {
+                     }
+ 
+                     data = JSON.parse(res.body);
++                    if (data.results == null) {
++                        throw `无法获取章节内容：服务器返回 results=null`;
++                    }
+                     // console.log(data.results.chapter);
+                     // Handle image link sorting
+                     let imagesUrls = data.results.chapter.contents.map((e) => e.url);
+@@ -1095,7 +1129,7 @@ class CopyManga extends ComicSource {
+     }
+ 
+     async refreshAppApi() {
+-        const url = "https://api.copy-manga.com/api/v3/system/network2?platform=3"
++        const url = "https://api.copy202601.com/api/v3/system/network2?platform=3"
+         const res = await fetch(url, { headers: this.headers });
+         if (res.status === 200) {
+             let data = await res.json();
+diff --git a/copy_manga_multi_accounts.js b/copy_manga_multi_accounts.js
+index c08be8c..3c232f1 100644
+--- a/copy_manga_multi_accounts.js
++++ b/copy_manga_multi_accounts.js
+@@ -54,13 +54,13 @@ class CopyManga extends ComicSource {
+         );
+ 
+         return {
+-            "User-Agent": `COPY/3.0.6`,
++            "User-Agent": `COPY/3.0.9`,
+             "source": "copyApp",
+             "deviceinfo": this.deviceinfo,
+             "dt": `${year}.${month}.${day}`,
+             "platform": "3",
+-            "referer": `com.copymanga.app-3.0.6`,
+-            "version": "3.0.6",
++            "referer": `com.copymanga.app-3.0.9`,
++            "version": "3.0.9",
+             "device": this.device,
+             "pseudoid": this.pseudoid,
+             "Accept": "application/json",
+@@ -80,7 +80,7 @@ class CopyManga extends ComicSource {
+ 
+     static defaultImageQuality = "1500"
+ 
+-    static defaultApiUrl = 'api.copy2000.online'
++    static defaultApiUrl = 'api.copy202601.com'
+ 
+     static searchApi = "/api/kb/web/searchb/comics"
+ 
+@@ -947,7 +947,14 @@ class CopyManga extends ComicSource {
+             ])
+ 
+             if (results[0].status !== 200) {
+-                throw `Invalid status code: ${res.status}`;
++                let message = `Invalid status code: ${results[0].status}`;
++                try {
++                    let body = JSON.parse(results[0].body);
++                    if (body.message) {
++                        message = body.message;
++                    }
++                } catch (e) {}
++                throw message;
+             }
+ 
+             let data = JSON.parse(results[0].body).results;
+@@ -991,6 +998,8 @@ class CopyManga extends ComicSource {
+ 
+             while (attempt < maxAttempts) {
+                 try {
++                    // 限制章节请求频率，避免触发拷贝漫画风控
++                    await new Promise((resolve) => setTimeout(resolve, 1200));
+                     let reqId = await this.getReqID();
+                     res = await Network.get(
+                         `${this.apiUrl}/api/v3/comic/${comicId}/chapter2/${epId}?in_mainland=true&request_id=${reqId}`,
+@@ -1002,22 +1011,44 @@ class CopyManga extends ComicSource {
+                     if (res.status === 210) {
+                         // 210 indicates too frequent access, extract wait time
+                         let waitTime = 40000; // Default wait time 40s
++                        let serverMessage = "";
++                        let blocked = false;
+                         try {
+                             let responseBody = JSON.parse(res.body);
+-                            if (
+-                                responseBody.message &&
+-                                responseBody.message.includes("Expected available in")
+-                            ) {
+-                                let match = responseBody.message.match(/(\d+)\s*seconds/);
++                            serverMessage = responseBody.message || "";
++                            if (serverMessage.includes("copy3000.com/download") || serverMessage.includes("破解版本") || serverMessage.includes("破解版")) {
++                                blocked = true;
++                            }
++                            if (responseBody.message) {
++                                // English: "Expected available in X seconds"
++                                let match = responseBody.message.match(/Expected available in (\d+)\s*seconds/);
++                                // Chinese: "等待1小時" / "等待30分钟" / "等待30秒"
++                                let zhMatch = responseBody.message.match(/等待(\d+)\s*(小時|小时|分鐘|分钟|秒)/);
+                                 if (match && match[1]) {
+                                     waitTime = parseInt(match[1]) * 1000;
++                                } else if (zhMatch && zhMatch[1]) {
++                                    let num = parseInt(zhMatch[1]);
++                                    if (zhMatch[2] === "小時" || zhMatch[2] === "小时") {
++                                        waitTime = num * 3600000;
++                                    } else if (zhMatch[2] === "分鐘" || zhMatch[2] === "分钟") {
++                                        waitTime = num * 60000;
++                                    } else {
++                                        waitTime = num * 1000;
++                                    }
+                                 }
+                             }
++                            // Cap at 30 minutes to avoid excessive waiting
++                            waitTime = Math.min(waitTime, 1800000);
+                         } catch (e) {
+                             console.log(
+                                 "Unable to parse wait time, using default wait time 40s"
+                             );
+                         }
++                        if (blocked) {
++                            // 服务器风控/限流：等待更长时间后重试，而不是立即失败
++                            waitTime = Math.max(waitTime, 30000);
++                            console.log(`拷贝漫画服务器限制，等待 ${waitTime / 1000}s 后重试`);
++                        }
+                         console.log(`Chapter${epId} access too frequent, waiting ${waitTime / 1000}s`);
+                         await new Promise((resolve) => setTimeout(resolve, waitTime));
+                         throw "Retry";
+@@ -1028,6 +1059,9 @@ class CopyManga extends ComicSource {
+                     }
+ 
+                     data = JSON.parse(res.body);
++                    if (data.results == null) {
++                        throw `无法获取章节内容：服务器返回 results=null`;
++                    }
+                     // console.log(data.results.chapter);
+                     // Handle image link sorting
+                     let imagesUrls = data.results.chapter.contents.map((e) => e.url);
+@@ -1399,7 +1433,7 @@ class CopyManga extends ComicSource {
+     }
+ 
+     async refreshAppApi() {
+-        const url = "https://api.copy-manga.com/api/v3/system/network2?platform=3"
++        const url = "https://api.copy202601.com/api/v3/system/network2?platform=3"
+         const res = await fetch(url, { headers: this.headers });
+         if (res.status === 200) {
+             let data = await res.json();
+diff --git a/hot_manga.js b/hot_manga.js
+index 35b7028..1843295 100644
+--- a/hot_manga.js
++++ b/hot_manga.js
+@@ -10,7 +10,7 @@ class HotManga extends ComicSource {
+ 
+     key = "hot_manga"
+ 
+-    version = "1.0.0"
++    version = "1.0.1"
+ 
+     minAppVersion = "1.6.0"
+ 
+@@ -20,6 +20,30 @@ class HotManga extends ComicSource {
+ 
+     static defaultApiUrl = 'api.2024manga.com'
+ 
++    // 自适应限流状态
++    static _lastRequestTime = 0;
++    static _minInterval = 800;
++
++    static async _throttle() {
++        const now = Date.now();
++        const wait = HotManga._minInterval - (now - HotManga._lastRequestTime);
++        if (wait > 0) {
++            await new Promise((resolve) => setTimeout(resolve, wait));
++        }
++        HotManga._lastRequestTime = Date.now();
++    }
++
++    static _onSuccess() {
++        HotManga._minInterval = Math.max(800, HotManga._minInterval - 200);
++    }
++
++    static _onThrottled(waitTime) {
++        HotManga._minInterval = Math.min(5000, HotManga._minInterval + 500);
++        if (waitTime > HotManga._minInterval) {
++            HotManga._minInterval = Math.min(5000, waitTime);
++        }
++    }
++
+     get headers() {
+         return {
+             "Authorization": this.loadData('token') ? `Token ${this.loadData('token')}` : '',
+@@ -586,7 +610,14 @@ class HotManga extends ComicSource {
+             ])
+ 
+             if (results[0].status !== 200) {
+-                throw `Invalid status code: ${res.status}`;
++                let message = `Invalid status code: ${results[0].status}`;
++                try {
++                    let body = JSON.parse(results[0].body);
++                    if (body.message) {
++                        message = body.message;
++                    }
++                } catch (e) {}
++                throw message;
+             }
+ 
+             let data = JSON.parse(results[0].body).results;
+@@ -630,6 +661,8 @@ class HotManga extends ComicSource {
+ 
+             while (attempt < maxAttempts) {
+                 try {
++                    // 自适应限制章节请求频率，避免触发源站限流
++                    await HotManga._throttle();
+ 
+                     res = await Network.get(
+                         `${this.apiUrl}/api/v3/comic/${comicId}/chapter/${epId}?platform=3&_update=true`,
+@@ -658,6 +691,7 @@ class HotManga extends ComicSource {
+                             );
+                         }
+                         console.log(`Chapter${epId} access too frequent, waiting ${waitTime / 1000}s`);
++                        HotManga._onThrottled(waitTime);
+                         await new Promise((resolve) => setTimeout(resolve, waitTime));
+                         throw "Retry";
+                     }
+@@ -666,6 +700,7 @@ class HotManga extends ComicSource {
+                         throw `Invalid status code: ${res.status}`;
+                     }
+ 
++                    HotManga._onSuccess();
+                     data = JSON.parse(res.body);
+                     // console.log(data.results.chapter);
+                     // Handle image link sorting
+diff --git a/komga.js b/komga.js
+index 61cca82..1fd9dcd 100644
+--- a/komga.js
++++ b/komga.js
+@@ -46,8 +46,8 @@ class Komga extends ComicSource {
+ 		if (stored) {
+ 			return stored
+ 		}
+-		const username = this.loadSetting('default_username')
+-		const password = this.loadSetting('default_password')
++		const username = this.settings.default_username ? this.loadSetting('default_username') : null
++		const password = this.settings.default_password ? this.loadSetting('default_password') : null
+ 		if (!username || !password) {
+ 			return null
+ 		}

@@ -1,0 +1,675 @@
+﻿diff --git a/android/gradle.properties b/android/gradle.properties
+index 85eda9d..e979d25 100644
+--- a/android/gradle.properties
++++ b/android/gradle.properties
+@@ -1,6 +1,9 @@
+-org.gradle.jvmargs=-Xmx4G -XX:+HeapDumpOnOutOfMemoryError
++org.gradle.jvmargs=-Xmx4G -XX:+HeapDumpOnOutOfMemoryError -Djava.net.preferIPv4Stack=true -Dhttps.protocols=TLSv1.2
++systemProp.jdk.tls.client.protocols=TLSv1.2
+ android.useAndroidX=true
+ android.enableJetifier=true
+ android.defaults.buildfeatures.buildconfig=true
+ android.nonTransitiveRClass=false
+-android.nonFinalResIds=false
+\ No newline at end of file
++android.nonFinalResIds=false
++kotlin.incremental=false
++kotlin.compiler.execution.strategy=in-process
+\ No newline at end of file
+diff --git a/android/settings.gradle b/android/settings.gradle
+index c0e5054..e1c9892 100644
+--- a/android/settings.gradle
++++ b/android/settings.gradle
+@@ -10,9 +10,9 @@ pluginManagement {
+     includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
+ 
+     repositories {
+-        google()
+-        mavenCentral()
+-        gradlePluginPortal()
++        maven { url 'https://maven.aliyun.com/repository/google' }
++        maven { url 'https://maven.aliyun.com/repository/central' }
++        maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+     }
+ }
+ 
+diff --git a/lib/foundation/appdata.dart b/lib/foundation/appdata.dart
+index 84363fc..6c42194 100644
+--- a/lib/foundation/appdata.dart
++++ b/lib/foundation/appdata.dart
+@@ -198,6 +198,7 @@ class Settings with ChangeNotifier {
+     'language': 'system', // system, zh-CN, zh-TW, en-US
+     'cacheSize': 2048, // in MB
+     'downloadThreads': 5,
++    'imageListThreads': 3,
+     'enableLongPressToZoom': true,
+     'longPressZoomPosition': "press", // press, center
+     'checkUpdateOnStart': false,
+diff --git a/lib/foundation/js_engine.dart b/lib/foundation/js_engine.dart
+index efe6c32..260381e 100644
+--- a/lib/foundation/js_engine.dart
++++ b/lib/foundation/js_engine.dart
+@@ -167,7 +167,7 @@ class JsEngine with _JSEngineApi, JsUiApi, Init {
+             String settingKey = message["setting_key"];
+             var source = ComicSource.find(key)!;
+             return source.data["settings"]?[settingKey] ??
+-                source.settings?[settingKey]!['default'] ??
++                source.settings?[settingKey]?['default'] ??
+                 (throw "Setting not found: $settingKey");
+           case "isLogged":
+             return ComicSource.find(message["key"])!.isLogged;
+diff --git a/lib/network/download.dart b/lib/network/download.dart
+index 269ec83..feb95d3 100644
+--- a/lib/network/download.dart
++++ b/lib/network/download.dart
+@@ -158,6 +158,7 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
+       tasks.remove(i);
+     }
+     stopRecorder();
++    LocalManager().saveCurrentDownloadingTasks();
+     notifyListeners();
+   }
+ 
+@@ -187,14 +188,50 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
+   /// Current downloading chapter, index of [_images]
+   int _chapter = 0;
+ 
++  int _saveCountSinceLastPersist = 0;
++
++  DateTime _lastPersistTime = DateTime.now();
++
+   var tasks = <int, _ImageDownloadWrapper>{};
+ 
+   int get _maxConcurrentTasks =>
+       (appdata.settings["downloadThreads"] as num).toInt();
+ 
++  int get _imageListConcurrency {
++    final v = appdata.settings["imageListThreads"];
++    if (v is num) {
++      return v.toInt().clamp(1, 8).toInt();
++    }
++    return 3;
++  }
++
++  Future<void> _persistTaskProgress({bool force = false}) async {
++    _saveCountSinceLastPersist++;
++    final now = DateTime.now();
++    if (force ||
++        _saveCountSinceLastPersist >= 5 ||
++        now.difference(_lastPersistTime) >= const Duration(seconds: 1)) {
++      _lastPersistTime = now;
++      _saveCountSinceLastPersist = 0;
++      await LocalManager().saveCurrentDownloadingTasks();
++    }
++  }
++
+   void _scheduleTasks() {
+     var images = _images![_images!.keys.elementAt(_chapter)]!;
+     var downloading = 0;
++    Directory? saveTo;
++    if (comic!.chapters != null) {
++      saveTo = Directory(FilePath.join(
++        path!,
++        LocalManager.getChapterDirectoryName(
++          _images!.keys.elementAt(_chapter),
++        ),
++      ));
++      if (!saveTo.existsSync()) {
++        saveTo.createSync(recursive: true);
++      }
++    }
+     for (var i = _index; i < images.length; i++) {
+       if (downloading >= _maxConcurrentTasks) {
+         return;
+@@ -207,25 +244,11 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
+           continue;
+         }
+       }
+-      Directory saveTo;
+-      if (comic!.chapters != null) {
+-        saveTo = Directory(FilePath.join(
+-          path!,
+-          LocalManager.getChapterDirectoryName(
+-            _images!.keys.elementAt(_chapter),
+-          ),
+-        ));
+-        if (!saveTo.existsSync()) {
+-          saveTo.createSync(recursive: true);
+-        }
+-      } else {
+-        saveTo = Directory(path!);
+-      }
+       var task = _ImageDownloadWrapper(
+         this,
+         _images!.keys.elementAt(_chapter),
+         images[i],
+-        saveTo,
++        saveTo ?? Directory(path!),
+         i,
+       );
+       tasks[i] = task;
+@@ -238,6 +261,59 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
+     }
+   }
+ 
++  Future<void> _fetchImageList() async {
++    final allChapters = comic!.chapters!.allChapters.keys.toList();
++    final selected = chapters == null
++        ? allChapters
++        : allChapters.where(chapters!.contains).toList();
++    final totalCpCount = selected.length;
++    var cpCount = 0;
++    var nextIndex = 0;
++    final concurrency = _imageListConcurrency;
++
++    Future<void> worker() async {
++      while (_isRunning && !_isError) {
++        if (nextIndex >= selected.length) {
++          return;
++        }
++        final i = selected[nextIndex++];
++
++        if (_images![i] != null) {
++          _totalCount += _images![i]!.length;
++          cpCount++;
++          _message = "Fetching image list ($cpCount/$totalCpCount)...";
++          notifyListeners();
++          continue;
++        }
++
++        _message = "Fetching image list ($cpCount/$totalCpCount)...";
++        notifyListeners();
++        final res = await _runWithRetry(() async {
++          final r = await source.loadComicPages!(comicId, i);
++          if (r.error) {
++            throw r.errorMessage!;
++          }
++          return r.data;
++        });
++        if (!_isRunning || _isError) {
++          return;
++        }
++        if (res.error) {
++          Log.error("Download", res.errorMessage!);
++          _setError("Error: ${res.errorMessage}");
++          return;
++        }
++        _images![i] = res.data;
++        _totalCount += _images![i]!.length;
++        cpCount++;
++        _message = "Fetching image list ($cpCount/$totalCpCount)...";
++        notifyListeners();
++      }
++    }
++
++    await Future.wait(List.generate(concurrency, (_) => worker()));
++  }
++
+   @override
+   void resume() async {
+     if (_isRunning) return;
+@@ -345,38 +421,9 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
+       } else {
+         _images = {};
+         _totalCount = 0;
+-        int cpCount = 0;
+-        int totalCpCount =
+-            chapters?.length ?? comic!.chapters!.allChapters.length;
+-        for (var i in comic!.chapters!.allChapters.keys) {
+-          if (chapters != null && !chapters!.contains(i)) {
+-            continue;
+-          }
+-          if (_images![i] != null) {
+-            _totalCount += _images![i]!.length;
+-            continue;
+-          }
+-          _message = "Fetching image list ($cpCount/$totalCpCount)...";
+-          notifyListeners();
+-          var res = await _runWithRetry(() async {
+-            var r = await source.loadComicPages!(comicId, i);
+-            if (r.error) {
+-              throw r.errorMessage!;
+-            } else {
+-              return r.data;
+-            }
+-          });
+-          if (!_isRunning) {
+-            return;
+-          }
+-          if (res.error) {
+-            Log.error("Download", res.errorMessage!);
+-            _setError("Error: ${res.errorMessage}");
+-            return;
+-          } else {
+-            _images![i] = res.data;
+-            _totalCount += _images![i]!.length;
+-          }
++        await _fetchImageList();
++        if (!_isRunning || _isError) {
++          return;
+         }
+       }
+       _message = "$_downloadedCount/$_totalCount";
+@@ -402,7 +449,7 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
+         _index++;
+         _downloadedCount++;
+         _message = "$_downloadedCount/$_totalCount";
+-        await LocalManager().saveCurrentDownloadingTasks();
++        await _persistTaskProgress();
+       }
+       _index = 0;
+       _chapter++;
+@@ -569,7 +616,8 @@ class _ImageDownloadWrapper {
+     int lastBytes = 0;
+     try {
+       await for (var p in ImageDownloader.loadComicImageUnwrapped(
+-          image, task.source.key, task.comicId, chapter)) {
++          image, task.source.key, task.comicId, chapter,
++          writeCache: false)) {
+         if (isCancelled) {
+           return;
+         }
+diff --git a/lib/network/images.dart b/lib/network/images.dart
+index 8f311d7..93c139c 100644
+--- a/lib/network/images.dart
++++ b/lib/network/images.dart
+@@ -117,12 +117,21 @@ abstract class ImageDownloader {
+   }
+ 
+   static Stream<ImageDownloadProgress> loadComicImageUnwrapped(
+-      String imageKey, String? sourceKey, String cid, String eid) {
+-    return _loadComicImage(imageKey, sourceKey, cid, eid);
++      String imageKey,
++      String? sourceKey,
++      String cid,
++      String eid, {
++      bool writeCache = true}) {
++    return _loadComicImage(imageKey, sourceKey, cid, eid,
++        writeCache: writeCache);
+   }
+ 
+   static Stream<ImageDownloadProgress> _loadComicImage(
+-      String imageKey, String? sourceKey, String cid, String eid) async* {
++      String imageKey,
++      String? sourceKey,
++      String cid,
++      String eid, {
++      bool writeCache = true}) async* {
+     final cacheKey = "$imageKey@$sourceKey@$cid@$eid";
+     final cache = await CacheManager().findCache(cacheKey);
+ 
+@@ -213,7 +222,9 @@ abstract class ImageDownloader {
+           data = newData;
+         }
+ 
+-        await CacheManager().writeCache(cacheKey, data);
++        if (writeCache) {
++          await CacheManager().writeCache(cacheKey, data);
++        }
+         yield ImageDownloadProgress(
+           currentBytes: data.length,
+           totalBytes: data.length,
+diff --git a/lib/pages/local_comics_page.dart b/lib/pages/local_comics_page.dart
+index 8a2b56e..8b61c46 100644
+--- a/lib/pages/local_comics_page.dart
++++ b/lib/pages/local_comics_page.dart
+@@ -444,6 +444,13 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
+           exportComics(comics, CBZ.export, ".cbz");
+         },
+       ),
++      MenuEntry(
++        icon: Icons.save_alt_outlined,
++        text: "Export as Venera backup".tl,
++        onClick: () {
++          exportComics(comics, CBZ.exportVenera, ".cbz");
++        },
++      ),
+       MenuEntry(
+         icon: Icons.picture_as_pdf_outlined,
+         text: "Export as pdf".tl,
+diff --git a/lib/pages/settings/network.dart b/lib/pages/settings/network.dart
+index a97d02e..16222b0 100644
+--- a/lib/pages/settings/network.dart
++++ b/lib/pages/settings/network.dart
+@@ -28,6 +28,13 @@ class _NetworkSettingsState extends State<NetworkSettings> {
+           min: 1,
+           max: 16,
+         ).toSliver(),
++        _SliderSetting(
++          title: "Image List Threads".tl,
++          settingsIndex: 'imageListThreads',
++          interval: 1,
++          min: 1,
++          max: 8,
++        ).toSliver(),
+       ],
+     );
+   }
+diff --git a/lib/utils/cbz.dart b/lib/utils/cbz.dart
+index 3e4b25b..871d023 100644
+--- a/lib/utils/cbz.dart
++++ b/lib/utils/cbz.dart
+@@ -59,6 +59,62 @@ class ComicChapter {
+   ComicChapter({required this.title, required this.start, required this.end});
+ }
+ 
++/// Venera native backup metadata.
++///
++/// Unlike the flat CBZ `metadata.json`, this keeps the exact chapter map used
++/// by `LocalComic`, so importing on another device can restore chapter names
++/// and groups correctly.
++class VeneraNativeMeta {
++  final String title;
++
++  final String author;
++
++  final List<String> tags;
++
++  final Map<String, dynamic> chapters;
++
++  final List<String> downloadedChapters;
++
++  final String cover;
++
++  final DateTime? createdAt;
++
++  VeneraNativeMeta({
++    required this.title,
++    required this.author,
++    required this.tags,
++    required this.chapters,
++    required this.downloadedChapters,
++    required this.cover,
++    this.createdAt,
++  });
++
++  factory VeneraNativeMeta.fromJson(Map<String, dynamic> json) {
++    return VeneraNativeMeta(
++      title: json['title'] as String,
++      author: (json['author'] as String?) ?? '',
++      tags: (json['tags'] as List?)?.cast<String>() ?? [],
++      chapters: (json['chapters'] as Map?)?.cast<String, dynamic>() ?? {},
++      downloadedChapters:
++          (json['downloadedChapters'] as List?)?.cast<String>() ?? [],
++      cover: (json['cover'] as String?) ?? '',
++      createdAt: json['createdAt'] == null
++          ? null
++          : DateTime.fromMillisecondsSinceEpoch(json['createdAt'] as int),
++    );
++  }
++
++  Map<String, dynamic> toJson() => {
++        'title': title,
++        'author': author,
++        'tags': tags,
++        'chapters': chapters,
++        'downloadedChapters': downloadedChapters,
++        'cover': cover,
++        'createdAt': createdAt?.millisecondsSinceEpoch,
++      };
++}
++
+ /// Comic Book Archive. Currently supports CBZ, ZIP and 7Z formats.
+ abstract class CBZ {
+   static Future<FileType> checkType(File file) async {
+@@ -81,6 +137,125 @@ abstract class CBZ {
+     }
+   }
+ 
++  static Future<LocalComic> _importNative(
++      Directory cache, VeneraNativeMeta meta) async {
++    var old = LocalManager().findByName(meta.title);
++    if (old != null) {
++      throw Exception('Comic with name ${meta.title} already exists');
++    }
++    var dest = Directory(
++      FilePath.join(LocalManager().path, sanitizeFileName(meta.title)),
++    );
++    dest.createSync();
++
++    // Copy cover.
++    var coverName = meta.cover;
++    var coverSrc = coverName.isEmpty
++        ? null
++        : File(FilePath.join(cache.path, coverName));
++    if (coverSrc == null || !coverSrc.existsSync()) {
++      var files = cache
++          .listSync()
++          .whereType<File>()
++          .where((e) =>
++              ['jpg', 'jpeg', 'png', 'webp', 'gif', 'jpe']
++                  .contains(e.extension.toLowerCase()))
++          .toList();
++      coverSrc = files.firstWhereOrNull(
++            (e) => e.basenameWithoutExt.toLowerCase() == 'cover',
++          ) ??
++          (files.isNotEmpty ? files.first : null);
++      if (coverSrc != null) coverName = coverSrc.name;
++    }
++    if (coverSrc != null) {
++      await coverSrc.copyMem(FilePath.join(dest.path, coverName));
++    } else {
++      coverName = 'cover.jpg';
++    }
++
++    var downloaded = <String>[];
++    ComicChapters? chaptersObj;
++    if (meta.chapters.isNotEmpty) {
++      chaptersObj = ComicChapters.fromJson(meta.chapters);
++      for (var id in chaptersObj.ids) {
++        var cid = LocalManager.getChapterDirectoryName(id);
++        var srcDir = Directory(FilePath.join(cache.path, cid));
++        if (srcDir.existsSync()) {
++          var dstDir = Directory(FilePath.join(dest.path, cid));
++          dstDir.createSync();
++          await for (var f in srcDir.list()) {
++            if (f is File) {
++              await f.copyMem(FilePath.join(dstDir.path, f.name));
++            }
++          }
++          downloaded.add(id);
++        }
++      }
++      if (meta.downloadedChapters.isNotEmpty) {
++        downloaded = meta.downloadedChapters
++            .where((id) =>
++                Directory(FilePath.join(dest.path,
++                        LocalManager.getChapterDirectoryName(id)))
++                    .existsSync())
++            .toList();
++      }
++    } else {
++      // No chapter map: treat every subdirectory as a chapter. If there are no
++      // subdirectories, keep a flat local comic and copy root images instead.
++      var map = <String, String>{};
++      for (var entry in cache.listSync().whereType<Directory>()) {
++        var cid = LocalManager.getChapterDirectoryName(entry.name);
++        map[cid] = entry.name;
++        var dstDir = Directory(FilePath.join(dest.path, cid));
++        dstDir.createSync();
++        await for (var f in entry.list()) {
++          if (f is File) {
++            await f.copyMem(FilePath.join(dstDir.path, f.name));
++          }
++        }
++        downloaded.add(cid);
++      }
++      if (map.isNotEmpty) {
++        chaptersObj = ComicChapters(map);
++      } else {
++        for (var f in cache.listSync().whereType<File>().where((e) =>
++            ['jpg', 'jpeg', 'png', 'webp', 'gif', 'jpe']
++                .contains(e.extension.toLowerCase()))) {
++          if (f.name.startsWith('cover.')) continue;
++          await f.copyMem(FilePath.join(dest.path, f.name));
++        }
++      }
++    }
++
++    if (!File(FilePath.join(dest.path, coverName)).existsSync()) {
++      var imageFiles = dest
++          .listSync()
++          .whereType<File>()
++          .where((e) =>
++              ['jpg', 'jpeg', 'png', 'webp', 'gif', 'jpe']
++                  .contains(e.extension.toLowerCase()))
++          .toList();
++      if (imageFiles.isNotEmpty) {
++        var first = imageFiles.first;
++        coverName = 'cover.${first.extension}';
++        await first.copyMem(FilePath.join(dest.path, coverName));
++      }
++    }
++
++    return LocalComic(
++      id: LocalManager().findValidId(ComicType.local),
++      title: meta.title,
++      subtitle: meta.author,
++      tags: meta.tags,
++      comicType: ComicType.local,
++      directory: dest.name,
++      chapters: chaptersObj,
++      downloadedChapters: downloaded,
++      cover: coverName,
++      createdAt: meta.createdAt ?? DateTime.now(),
++    );
++  }
++
+   static Future<LocalComic> import(File file) async {
+     var cache = Directory(FilePath.join(App.cachePath, 'cbz_import'));
+     if (cache.existsSync()) cache.deleteSync(recursive: true);
+@@ -90,6 +265,50 @@ abstract class CBZ {
+     if (f.length == 1 && f.first is Directory) {
+       cache = f.first as Directory;
+     }
++
++    // Native Venera backup format.
++    var nativeMetaFile = File(FilePath.join(cache.path, 'venera_metadata.json'));
++    if (nativeMetaFile.existsSync()) {
++      try {
++        var nativeMeta = VeneraNativeMeta.fromJson(
++            jsonDecode(nativeMetaFile.readAsStringSync()));
++        var comic = await _importNative(cache, nativeMeta);
++        await cache.delete(recursive: true);
++        return comic;
++      } catch (_) {
++        // Fall back to the legacy importer if metadata is malformed.
++      }
++    }
++
++    // A manually zipped local-comic folder has chapter subdirectories and
++    // usually only a cover image at the root. Import it as a native folder so
++    // it no longer fails with "No images found in the archive" or silently
++    // imports only the cover.
++    var rootImageFiles = cache
++        .listSync()
++        .whereType<File>()
++        .where((e) =>
++            ['jpg', 'jpeg', 'png', 'webp', 'gif', 'jpe']
++                .contains(e.extension.toLowerCase()))
++        .toList();
++    var rootPageFiles =
++        rootImageFiles.where((e) => !e.name.startsWith('cover.')).toList();
++    var dirs = cache.listSync().whereType<Directory>().toList();
++    if (dirs.isNotEmpty && rootPageFiles.isEmpty) {
++      var fallbackMeta = VeneraNativeMeta(
++        title: file.name.substring(0, file.name.lastIndexOf('.')),
++        author: '',
++        tags: [],
++        chapters: {},
++        downloadedChapters: [],
++        cover: '',
++        createdAt: null,
++      );
++      var comic = await _importNative(cache, fallbackMeta);
++      await cache.delete(recursive: true);
++      return comic;
++    }
++
+     var metaDataFile = File(FilePath.join(cache.path, 'metadata.json'));
+     ComicMetaData? metaData;
+     if (metaDataFile.existsSync()) {
+@@ -253,6 +472,83 @@ abstract class CBZ {
+     return cbz;
+   }
+ 
++  /// Export a local comic as a Venera-native backup archive.
++  ///
++  /// Unlike the standard CBZ exporter, this preserves the exact chapter folder
++  /// layout and the authoritative `ComicChapters` JSON so a backup can be
++  /// restored on another device (or re-imported after clearing app data)
++  /// without losing chapter names or groups.
++  static Future<File> exportVenera(
++      LocalComic comic, String outFilePath) async {
++    var cache = Directory(FilePath.join(App.cachePath, 'venera_export'));
++    if (cache.existsSync()) cache.deleteSync(recursive: true);
++    cache.createSync();
++
++    // Cover.
++    var cover = comic.coverFile;
++    await cover.copyMem(
++        FilePath.join(cache.path, 'cover.${cover.path.split('.').last}'));
++
++    var downloaded = <String>[];
++    var chaptersObj = comic.chapters;
++    if (chaptersObj == null) {
++      // Flat local comic: copy root images, skipping the cover file.
++      var images = await LocalManager().getImages(comic.id, comic.comicType, 1);
++      for (var image in images) {
++        var src = File(image.replaceFirst('file://', ''));
++        await src.copyMem(FilePath.join(cache.path, src.name));
++      }
++    } else {
++      // Chaptered local comic: recreate chapter directories using the same
++      // sanitized names as LocalManager.getImages().
++      for (var id in chaptersObj.ids) {
++        var cid = LocalManager.getChapterDirectoryName(id);
++        var srcDir = Directory(FilePath.join(comic.baseDir, cid));
++        if (!srcDir.existsSync()) continue;
++        var dstDir = Directory(FilePath.join(cache.path, cid));
++        dstDir.createSync();
++        await for (var f in srcDir.list()) {
++          if (f is File && !f.name.startsWith('cover.')) {
++            await f.copyMem(FilePath.join(dstDir.path, f.name));
++          }
++        }
++      }
++      downloaded = comic.downloadedChapters
++          .where((id) =>
++              Directory(FilePath.join(cache.path,
++                      LocalManager.getChapterDirectoryName(id)))
++                  .existsSync())
++          .toList();
++      if (downloaded.isEmpty) {
++        downloaded = chaptersObj.ids
++            .where((id) =>
++                Directory(FilePath.join(cache.path,
++                        LocalManager.getChapterDirectoryName(id)))
++                    .existsSync())
++            .toList();
++      }
++    }
++
++    var meta = VeneraNativeMeta(
++      title: comic.title,
++      author: comic.subtitle,
++      tags: comic.tags,
++      chapters: chaptersObj?.toJson() ?? {},
++      downloadedChapters: downloaded,
++      cover: 'cover.${cover.path.split('.').last}',
++      createdAt: comic.createdAt,
++    );
++    await File(FilePath.join(cache.path, 'venera_metadata.json')).writeAsString(
++      jsonEncode(meta.toJson()),
++    );
++
++    var cbz = File(outFilePath);
++    if (cbz.existsSync()) cbz.deleteSync();
++    await _compress(cache.path, cbz.path);
++    cache.deleteSync(recursive: true);
++    return cbz;
++  }
++
+   static String _buildComicInfoXml(ComicMetaData data) {
+     final buffer = StringBuffer();
+     buffer.writeln('<?xml version="1.0" encoding="utf-8"?>');
