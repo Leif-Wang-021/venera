@@ -8,6 +8,7 @@ session.jsonl
 
 # ---- build / tooling artifacts ----
 build/
+dist/
 .dart_tool/
 .flutter-plugins
 .flutter-plugins-dependencies
