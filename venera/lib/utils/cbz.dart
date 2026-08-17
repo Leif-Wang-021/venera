@@ -79,6 +79,20 @@ class VeneraNativeMeta {
 
   final DateTime? createdAt;
 
+  /// Source identity (plain key, e.g. "hot_manga"). Restoring it instead of
+  /// forcing `ComicType.local` keeps the imported comic linked to the same
+  /// manga as the original, so it is not treated as a different comic and its
+  /// detail page can still be opened. The plain string is used (rather than a
+  /// hashCode number) so it stays stable across devices / Dart versions.
+  final String? sourceKey;
+
+  /// The source comic id (e.g. the id from the original source).
+  final String? id;
+
+  /// Fallback legacy value (a hashCode number). Only used when `sourceKey` is
+  /// absent (older backups).
+  final int comicType;
+
   VeneraNativeMeta({
     required this.title,
     required this.author,
@@ -87,6 +101,9 @@ class VeneraNativeMeta {
     required this.downloadedChapters,
     required this.cover,
     this.createdAt,
+    this.sourceKey,
+    this.id,
+    this.comicType = 0,
   });
 
   factory VeneraNativeMeta.fromJson(Map<String, dynamic> json) {
@@ -101,6 +118,9 @@ class VeneraNativeMeta {
       createdAt: json['createdAt'] == null
           ? null
           : DateTime.fromMillisecondsSinceEpoch(json['createdAt'] as int),
+      sourceKey: json['sourceKey'] as String?,
+      id: json['id'] as String?,
+      comicType: (json['comicType'] as int?) ?? 0,
     );
   }
 
@@ -112,6 +132,9 @@ class VeneraNativeMeta {
         'downloadedChapters': downloadedChapters,
         'cover': cover,
         'createdAt': createdAt?.millisecondsSinceEpoch,
+        'sourceKey': sourceKey,
+        'id': id,
+        'comicType': comicType,
       };
 }
 
@@ -242,12 +265,23 @@ abstract class CBZ {
       }
     }
 
+    final ComicType comicType;
+    if (meta.sourceKey != null && meta.sourceKey != 'local') {
+      comicType = ComicType.fromKey(meta.sourceKey!);
+    } else if (meta.comicType != 0) {
+      comicType = ComicType(meta.comicType);
+    } else {
+      comicType = ComicType.local;
+    }
+    final id = (meta.id != null && comicType != ComicType.local)
+        ? meta.id!
+        : LocalManager().findValidId(ComicType.local);
     return LocalComic(
-      id: LocalManager().findValidId(ComicType.local),
+      id: id,
       title: meta.title,
       subtitle: meta.author,
       tags: meta.tags,
-      comicType: ComicType.local,
+      comicType: comicType,
       directory: dest.name,
       chapters: chaptersObj,
       downloadedChapters: downloaded,
@@ -537,6 +571,12 @@ abstract class CBZ {
       downloadedChapters: downloaded,
       cover: 'cover.${cover.path.split('.').last}',
       createdAt: comic.createdAt,
+      // Keep the source identity only when this comic is linked to a real
+      // source; purely local comics stay local.
+      sourceKey:
+          comic.comicType == ComicType.local ? null : comic.comicType.sourceKey,
+      comicType: comic.comicType.value,
+      id: comic.comicType == ComicType.local ? null : comic.id,
     );
     await File(FilePath.join(cache.path, 'venera_metadata.json')).writeAsString(
       jsonEncode(meta.toJson()),

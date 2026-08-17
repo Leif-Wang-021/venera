@@ -397,7 +397,13 @@ class ImportComic {
       int importedCount = 0;
       for (var folder in importedComics.keys) {
         for (var comic in importedComics[folder]!) {
-          var id = LocalManager().findValidId(ComicType.local);
+          // Keep the original source comic id when the backup is linked to a
+          // real source (comicType != local), so the imported comic stays the
+          // same manga as the original and its detail page can be opened.
+          // Only purely local comics get a fresh local id.
+          var id = comic.comicType == ComicType.local
+              ? LocalManager().findValidId(ComicType.local)
+              : comic.id;
           LocalManager().add(comic, id);
           importedCount++;
           if (folder != null) {
