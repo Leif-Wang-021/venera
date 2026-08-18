@@ -14,6 +14,16 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
 
   static const int maxImagePixel = 2560 * 1440;
 
+  /// A 1x1 grey "broken image" pixel used to finish loading safely after all
+  /// retries are exhausted, so the UI shows a visible failed thumb instead of
+  /// an Unhandled Exception that crashes the app (desktop/Windows).
+  static final Uint8List _brokenPng = base64Decode(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=');
+
+  Future<ui.Codec> _loadBroken(ImageDecoderCallback decode) {
+    return ImmutableBuffer.fromUint8List(_brokenPng).then(decode);
+  }
+
   static TargetImageSize _getTargetSize(int width, int height) {
     // ignore invalid size
     if (width <= 0 || height <= 0) {
@@ -75,19 +85,24 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
         } on _ImageLoadingStopException {
           rethrow;
         } catch (e) {
-          if (e.toString().contains("Invalid Status Code: 404")) {
+          var msg = e.toString();
+          if (msg.contains("Invalid Status Code: 404")) {
             rethrow;
           }
-          if (e.toString().contains("Invalid Status Code: 403")) {
+          if (msg.contains("Invalid Status Code: 403")) {
             rethrow;
           }
-          if (e.toString().contains("handshake")) {
-            if (retryTime < 5) {
-              retryTime = 5;
-            }
+          // Transient failures (TLS handshake / 429 / 5xx server errors such as
+          // the hot_manga 530 thumbnail errors) get a longer backoff and more
+          // retries so they can recover instead of crashing or showing broken.
+          final transient = msg.contains("handshake") ||
+              RegExp(r'Invalid Status Code: (5\d\d|429)').hasMatch(msg);
+          if (transient && retryTime < 4) {
+            retryTime = 4;
           }
           retryTime <<= 1;
-          if (retryTime > (1 << 3) || stop) {
+          final cap = transient ? (1 << 5) : (1 << 3);
+          if (retryTime > cap || stop) {
             rethrow;
           }
           await Future.delayed(Duration(seconds: retryTime));
@@ -129,7 +144,14 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
         PaintingBinding.instance.imageCache.evict(key);
       });
       Log.error("Image Loading", e, s);
-      rethrow;
+      // After retries are exhausted, finish with a broken-image placeholder so
+      // the UI shows a visible failed thumbnail instead of letting the error
+      // Future escape as an Unhandled Exception (which crashes on Windows).
+      try {
+        return await _loadBroken(decode);
+      } catch (_) {
+        rethrow;
+      }
     } finally {
       chunkEvents.close();
     }
