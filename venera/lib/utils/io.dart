@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:isolate';
 
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_file_dialog/flutter_file_dialog.dart';
 import 'package:flutter_saf/flutter_saf.dart';
@@ -346,6 +347,11 @@ Future<void> saveFile(
     if (App.isMobile) {
       final params = SaveFileDialogParams(sourceFilePath: file!.path);
       await FlutterFileDialog.saveFile(params: params);
+    } else if (App.isWindows) {
+      // Custom in-app save dialog. The native Windows file dialog can load
+      // third-party shell extensions (Baidu Netdisk / OneDrive ...), which may
+      // throw RPC_S_SERVER_UNAVAILABLE (0x6BA) and cause the app to exit.
+      await saveFileOnWindows(file!, filename);
     } else {
       final result = await file_selector.getSaveLocation(
         suggestedName: filename,
@@ -360,6 +366,70 @@ Future<void> saveFile(
       IO._isSelectingFiles = false;
     });
   }
+}
+
+/// Saves [file] on Windows using an in-app dialog instead of the native file
+/// dialog, avoiding third-party shell-extension RPC failures (0x6BA).
+Future<void> saveFileOnWindows(File file, String filename) async {
+  final target = await showWindowsSaveDialog(filename);
+  if (target == null || target.isEmpty) {
+    return;
+  }
+  var dest = target;
+  if (!p.isAbsolute(dest)) {
+    var home = Platform.environment['USERPROFILE'] ?? '';
+    dest = p.join(home, 'Documents', p.basename(dest));
+  }
+  try {
+    await file.copy(dest);
+  } catch (e) {
+    App.rootContext.showMessage(message: e.toString());
+  }
+}
+
+/// Shows a simple in-app "Save As" dialog and returns the chosen path.
+Future<String?> showWindowsSaveDialog(String filename) async {
+  final userProfile = Platform.environment['USERPROFILE'] ?? '';
+  final defaultPath =
+      userProfile.isNotEmpty ? p.join(userProfile, 'Documents', filename) : filename;
+  final controller = TextEditingController(text: defaultPath);
+  String? result;
+  await showDialog<void>(
+    context: App.rootContext,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Save As'),
+      content: SizedBox(
+        width: 420,
+        child: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: 'Enter full path to save the file',
+            border: OutlineInputBorder(),
+          ),
+          onSubmitted: (v) {
+            result = v;
+            Navigator.of(ctx).pop();
+          },
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () {
+            result = controller.text;
+            Navigator.of(ctx).pop();
+          },
+          child: const Text('Save'),
+        ),
+      ],
+    ),
+  );
+  controller.dispose();
+  return result;
 }
 
 final class _IOOverrides extends IOOverrides {
