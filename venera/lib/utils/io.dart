@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_file_dialog/flutter_file_dialog.dart';
 import 'package:flutter_saf/flutter_saf.dart';
 import 'package:venera/foundation/app.dart';
+import 'package:venera/foundation/log.dart';
 import 'package:venera/utils/ext.dart';
 import 'package:path/path.dart' as p;
 import 'package:share_plus/share_plus.dart' as s;
@@ -395,16 +396,16 @@ Future<void> saveFileOnWindows(File file, String filename) async {
 /// Picks a save path using a native Windows SaveFileDialog inside an isolated
 /// PowerShell process. Returns null when cancelled or the helper fails.
 Future<String?> _pickNativeWindowsSavePath(String filename) async {
+  File? out;
   try {
-    final out = p.join(Directory.systemTemp.path, 'venera_save_path.txt');
-    final f = File(out);
-    if (f.existsSync()) {
-      f.deleteSync();
+    out = File(p.join(Directory.systemTemp.path, 'venera_save_path.txt'));
+    if (out.existsSync()) {
+      out.deleteSync();
     }
     final safeName = filename.replaceAll("'", "''");
     final script = '''
 Add-Type -AssemblyName System.Windows.Forms
-\$out = '$out'
+\$out = '${out.path.replaceAll("'", "''")}'
 \$dlg = New-Object System.Windows.Forms.SaveFileDialog
 \$dlg.FileName = '$safeName'
 \$dlg.Filter = 'All files (*.*)|*.*'
@@ -417,7 +418,10 @@ if (\$dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
 }
 ''';
     final b64 = base64Encode(utf8.encode(script));
-    final res = await Process.run('powershell.exe', [
+    // Use the absolute path so the packaged app does not depend on PATH.
+    const psExe = r'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe';
+    final exe = File(psExe).existsSync() ? psExe : 'powershell.exe';
+    final res = await Process.run(exe, [
       '-NoProfile',
       '-STA',
       '-ExecutionPolicy',
@@ -425,15 +429,21 @@ if (\$dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
       '-EncodedCommand',
       b64,
     ]);
-    if (res.exitCode == 0 && f.existsSync()) {
-      var content = (await f.readAsString()).trim();
-      f.deleteSync();
+    Log.info(
+        'SaveDialogHelper exit=${res.exitCode} stdout=${res.stdout.toString().trim().isEmpty ? '<empty>' : res.stdout.toString().trim()} stderr=${res.stderr.toString().trim()}');
+    if (res.exitCode == 0 && out.existsSync()) {
+      var content = (await out.readAsString()).trim();
+      out.deleteSync();
       if (content.isNotEmpty && content != 'CANCEL') {
         return content;
       }
+      Log.info('SaveDialogHelper cancelled or empty output');
+    } else {
+      Log.error('SaveDialogHelper failed',
+          'exit=${res.exitCode} outputExists=${out.existsSync()}');
     }
-  } catch (_) {
-    // ignore; fall back to in-app dialog
+  } catch (e, s) {
+    Log.error('SaveDialogHelper exception', e, s);
   }
   return null;
 }

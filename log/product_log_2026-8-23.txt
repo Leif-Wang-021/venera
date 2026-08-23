@@ -1,0 +1,79 @@
+# Venera 产品开发日志 · 2026-08-23
+
+## 本次会话主题
+围绕“Windows/Android 本地漫画完整备份、恢复、跨端构建、崩溃修复与存储优化”做了一轮系统性的源码修改与验证。
+
+---
+
+## 一、已完成并验证/交付的功能与修复
+
+### 1. 本地漫画原生备份/恢复格式（核心功能）
+- 新增 `VeneraNativeMeta`，使用 `venera_metadata.json` + 章节目录打包。
+- 完整保存/恢复：
+  - 章节名、章节分组（默認/單行本/其它漢化版）
+  - 已下载章节列表
+  - 封面、创建时间、标签、作者
+- 手工打包的“封面 + 章节子目录”zip/cbz 也能直接导入（不再报 “No images found”）。
+
+### 2. 源身份保留（同一个漫画，不是“另一个漫画”）
+- 备份格式新增 `sourceKey`（明文）+ `id`（源漫画 id）。
+- 导入后保持 `comic_type=29663848 (hot_manga)` 等源身份。
+- 修正 `registerComics`：源关联漫画保留源 id，不再覆盖成本地自增 id。
+- 结果：导入的漫画和 hot_manga 源里的原漫画是同一个，可打开详情页。
+
+### 3. 官方 Flutter 构建
+- 使用官方 Flutter 3.41.4 / Dart 3.11 构建。
+- 产出：
+  - Android APK：`build\app\outputs\flutter-apk\app-debug.apk`
+  - Windows 安装包：`build\windows\Venera-1.6.3-windows-installer.exe`
+- MuMu 模拟器上已导入真实漫画《彩純對蕾絲風俗大有興趣！》，55 章 / 3 分组 / 55 已下载全部核对通过。
+
+### 4. 图片加载 530 崩溃修复
+- 根因：热辣漫画缩略图服务器 530，图片加载失败最终变成 `Unhandled Exception`，Windows 直接崩。
+- 修复：`BaseImageProvider` 对 5xx/429/握手错误增加退避重试；重试耗尽后返回“灰色错误占位图”，不再冒泡成未处理异常。
+- 结果：日志不再出现该 Unhandled Exception，程序不再因此崩溃。
+
+### 5. 存储空间优化
+- 删除旧 Gradle 8.12 整套（约676MB）与 8.13 冗余压缩包（约221MB）。
+- 删除项目根 `session.jsonl`、`dsh-session-*.zip`。
+- 删除 Windows `windows/flutter/ephemeral`（256MB，可自动重建）。
+- 删除重复/临时 CBZ 副本，仅保留 `F:\venera\backup\彩純...cbz` 一份。
+- 将 Gradle 用户目录从 C: 迁移到 `D:\Gradle`（释放 C: 约12.3GB，打包速度不变）。
+- `.gitignore` 增加 `*.dmp`、`dist/` 等，避免大文件/转储进仓库。
+
+### 6. Windows 保存对话框静默退出修复
+- 根因：原生“保存位置”对话框加载百度网盘/OneDrive 等第三方 shell 扩展，触发 `RPC_S_SERVER_UNAVAILABLE (0x6BA)`，Venera 静默退出。
+- 第一版修复：改用应用内自绘“Save As”输入框（稳定但不满足“拉原生文件管理器”的需求）。
+- 第二版修复（当前）：Windows 用**独立 PowerShell 子进程**弹原生 `SaveFileDialog`，把崩溃隔离在子进程；失败/取消回退内置框；安卓保持原生 `FlutterFileDialog`。
+
+---
+
+## 二、当前待办/待验证
+
+1. **验证 Windows 原生保存对话框是否能正常弹出**。
+   - 用户测试后反馈：没有拉起资源管理器对话框。
+   - PowerShell + WinForms 在本机测试正常（`Add-Type` 可加载）。
+   - 已补充诊断日志与 powershell 绝对路径（`io.dart` 本轮刚改，尚未打包验证）。
+   - 下一步：**只构建 Windows 安装包**，安装后看 `logs.txt` 中的 `SaveDialogHelper` 日志，定位为何没弹窗。
+
+2. **Android 端不需要为保存对话框改动重打包**（安卓原生保存一直可用）。
+
+---
+
+## 三、工作规则（已确认）
+- 以后修改哪一个端，**先只构建对应端的安装包**；等项目基本完成再统一全量构建。
+- 日志规范：
+  - 路径：`F:\DeepSeek_Project\Venera\log\`
+  - 每次开发先读取当天日志；当天文件存在则补充/追加，不存在则创建。
+- Git：所有改动统一提交到顶层仓库 `F:\DeepSeek_Project\Venera`（main），提交信息用清晰中文。
+
+---
+
+## 四、相关提交（顶层仓库 main）
+- `28aad65 feat: Windows 保存改为原生对话框+子进程隔离，安卓保持原生文件管理器`
+- `b40ef23 fix: Windows 保存对话框改用应用内自绘，规避 Shell 扩展 RPC 0x6BA 导致的退出`
+- `06a5374 fix: 图片加载失败不再导致 Windows 崩溃(5xx重试+错误图兜底)`
+- `3084986 feat: 原生备份保留源身份(sourceKey+id)，导入不再覆盖源漫画id`
+- 其余：备份格式、构建脚本、gitignore、Gradle 迁移等。
+
+_待办以日志最新状态为准，下次开发先读此文件。_
