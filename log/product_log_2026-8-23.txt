@@ -135,3 +135,50 @@ _待办以日志最新状态为准，下次开发先读此文件。_
 
 ### 6. 相关提交
 - 本项目最外层仓库统一管理后，源码修改包含在初始统一提交及后续提交中；本轮工作记录以本日志为最新依据。
+
+---
+
+## 六、追加：本会话（脚本工具/导出/整理/版本管理）总结
+
+> 本次为另一个会话的开发日志补充，按规则追加到当天日志。
+
+### 1. 日志读取与问题修复（漫画源/配置层）
+- **Komga**：修复 `loadSetting('default_username')` 空值崩溃
+  - `komga.js` 改为仅在设置存在时调用 `loadSetting`
+  - Venera 源码 `lib/foundation/js_engine.dart` 将 `!['default']` 改为 `?['default']`
+- **jm.js**：`?express=` 修正为 `&express=`（旧域名仍 404，属于外部域名失效）
+- **copy_manga**：
+  - API host 从 `api.copy2000.online` 切换到 `api.copy202601.com`
+  - 版本头从 3.0.6 更新到 3.0.9
+  - 210 风控处理优化：识别“请使用正版/破解版”后不再反复重试刷屏；限流时按服务器返回等待
+  - 清除被风控标记的设备指纹 `copy_manga.data`，换新指纹后恢复
+- **hot_manga**：增加章节请求间隔，降低触发 `Request was throttled` 的概率
+- **manga_dex**：本地旧脚本替换为上游新版（使用 dataSaver/压缩图 + `uploads.mangadex.org`），修复图片 404
+
+### 2. 下载慢分析与调优
+- 实测时间线：
+  - 图片列表阶段：约 4 分 48 秒（55 话）
+  - 图片下载阶段：约 28 分钟（2060 张）
+- 通过降低下载线程、增加请求间隔、210 自动等待等方式缓解源站限流
+- 后续另有独立会话完成“全局下载优化”，见上文第五节
+
+### 3. 导出/分享工具（新增脚本，已入库）
+- `scripts/export_comic_pdfs.py`：按章节生成无损 PDF（55 个，约 3.69GB）
+- `scripts/export_categorized_zip.py`：按分组+可读章节名分类并打包 ZIP（约 0.82GB，STORE 不二次压缩）
+- `scripts/generate_manifest.py`：生成章节文件夹信息清单（md/json）
+
+### 4. 本地文件夹整理
+- 旧 Komiic 不完整文件夹移至 `F:\venera\彩純對蕾絲風俗大有興趣！.old_komiic_20260817` 备份
+- 完整下载文件夹 `彩純...(1)` 改名为 `彩純...`
+- 同步更新 `local.db` 中 `comics.directory` 字段，保证 Venera 能识别
+
+### 5. 版本管理统一
+- 在最外层 `F:\DeepSeek_Project\Venera` 初始化统一 git 仓库（分支 main）
+- 内部 `venera/.git`、`venera-configs/.git` 移入 `.git_backups/` 保留历史并忽略
+- 新增 `.gitignore`，初始提交 `2f67961`（370 files）
+- 后续所有修改统一提交到该顶层仓库
+
+### 6. 后续工作规则
+- 新增文件一律放入 `F:\DeepSeek_Project\Venera`，不散落到 Temp/C 盘等位置
+- 可复用构建库/工具安装位置由用户确认后再动
+- 每次开发先读取 `F:\DeepSeek_Project\Venera\log\` 下当天日志；当天文件存在则补充/追加，不存在则创建
