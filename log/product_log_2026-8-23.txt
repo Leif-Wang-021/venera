@@ -182,3 +182,32 @@ _待办以日志最新状态为准，下次开发先读此文件。_
 - 新增文件一律放入 `F:\DeepSeek_Project\Venera`，不散落到 Temp/C 盘等位置
 - 可复用构建库/工具安装位置由用户确认后再动
 - 每次开发先读取 `F:\DeepSeek_Project\Venera\log\` 下当天日志；当天文件存在则补充/追加，不存在则创建
+
+---
+
+## 七、追加：Windows 原生保存对话框不弹出 —— 根因修复与打包验证
+
+### 1. 问题与根因
+- 现象：Windows 端执行保存操作时，系统资源管理器的"保存"对话框始终不弹出。
+- 根因：`lib/utils/io.dart` 的 `_pickNativeWindowsSavePath()` 用 `base64Encode(utf8.encode(script))` 构造 PowerShell `-EncodedCommand` 参数，但该参数**要求 Base64(UTF-16LE)**；UTF-8 字节被按 UTF-16LE 解码成乱码，PowerShell 启动即抛 `CommandNotFoundException`（exit=1），对话框从未创建。
+- 实证：本机对照实验——同一脚本 UTF-8 编码 → exit=1 报错；UTF-16LE 编码 → exit=0 正常执行。
+- 连带发现并一并修复：
+  - 结果回写用 `Out-File -Encoding ASCII`，中文路径会变 `?`，改为 `[System.IO.File]::WriteAllText()`（UTF-8 无 BOM）；实测含繁体/全角字符路径往返无损。
+  - Dart 读取侧增加 BOM 防御剥离。
+  - PowerShell 参数补 `-WindowStyle Hidden`，减少控制台窗口闪现。
+  - 上轮遗留的两个编译错误（单参数 `Log.info` 调用）导致无法构建，已修正为双参数。
+
+### 2. 修改点
+- 仅 `venera/lib/utils/io.dart`：新增 `_powerShellEncodedCommandBytes()`（UTF-16LE 编码）、脚本写出改 `WriteAllText`、读回剥离 BOM、进程参数加 `-WindowStyle Hidden`、修正两处 `Log.info` 调用。
+
+### 3. 验证方式
+- 自动化：UTF-16LE EncodedCommand 含中文脚本解析执行 OK；`WriteAllText` 写出中文路径文件，UTF-8 读回逐字符一致、无 BOM。
+- 构建：`flutter analyze lib/utils/io.dart` 无 error（仅遗留 Share 弃用 info）；`flutter build windows --release` 成功（106.7s）。
+- 实机（待用户）：安装新安装包后执行任一保存操作（如导出备份/保存封面），应弹出原生资源管理器 SaveFileDialog；选路径后文件正确落盘；若仍失败，查看应用 logs.txt 中 `SaveDialogHelper exit=...` 日志定位。
+
+### 4. 交付物
+- Windows 安装包：`venera\build\windows\Venera-1.6.3-windows-installer.exe`（约 16MB，22:32 生成，使用 build_sourcekey.iss）
+- Android 未改动，不重打包（遵守分端构建规则）。
+
+### 5. 其它记录
+- 本机 ISCC.exe 位于用户级目录：`C:\Users\26981\AppData\Local\Programs\Inno Setup 6\ISCC.exe`（后续打包直接引用该路径）。

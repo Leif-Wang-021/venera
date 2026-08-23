@@ -393,6 +393,20 @@ Future<void> saveFileOnWindows(File file, String filename) async {
   }
 }
 
+/// Encodes [script] into the byte format required by PowerShell's
+/// -EncodedCommand parameter: Base64 of **UTF-16LE** bytes.
+/// (UTF-8 bytes are mis-decoded as garbage and the command fails instantly,
+/// which is why the native save dialog never appeared.)
+Uint8List _powerShellEncodedCommandBytes(String script) {
+  final units = script.codeUnits;
+  final bytes = Uint8List(units.length * 2);
+  for (var i = 0; i < units.length; i++) {
+    bytes[i * 2] = units[i] & 0xff;
+    bytes[i * 2 + 1] = (units[i] >> 8) & 0xff;
+  }
+  return bytes;
+}
+
 /// Picks a save path using a native Windows SaveFileDialog inside an isolated
 /// PowerShell process. Returns null when cancelled or the helper fails.
 Future<String?> _pickNativeWindowsSavePath(String filename) async {
@@ -403,41 +417,47 @@ Future<String?> _pickNativeWindowsSavePath(String filename) async {
       out.deleteSync();
     }
     final safeName = filename.replaceAll("'", "''");
+    final outPath = out.path.replaceAll("'", "''");
     final script = '''
 Add-Type -AssemblyName System.Windows.Forms
-\$out = '${out.path.replaceAll("'", "''")}'
+\$out = '$outPath'
 \$dlg = New-Object System.Windows.Forms.SaveFileDialog
 \$dlg.FileName = '$safeName'
 \$dlg.Filter = 'All files (*.*)|*.*'
 \$dlg.OverwritePrompt = \$true
 \$dlg.InitialDirectory = [Environment]::GetFolderPath('MyDocuments')
 if (\$dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-  \$dlg.FileName | Out-File -FilePath \$out -Encoding ASCII
+  [System.IO.File]::WriteAllText(\$out, \$dlg.FileName)
 } else {
-  'CANCEL' | Out-File -FilePath \$out -Encoding ASCII
+  [System.IO.File]::WriteAllText(\$out, 'CANCEL')
 }
 ''';
-    final b64 = base64Encode(utf8.encode(script));
+    // -EncodedCommand requires UTF-16LE, not UTF-8.
+    final b64 = base64Encode(_powerShellEncodedCommandBytes(script));
     // Use the absolute path so the packaged app does not depend on PATH.
     const psExe = r'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe';
     final exe = File(psExe).existsSync() ? psExe : 'powershell.exe';
     final res = await Process.run(exe, [
       '-NoProfile',
       '-STA',
+      '-WindowStyle',
+      'Hidden',
       '-ExecutionPolicy',
       'Bypass',
       '-EncodedCommand',
       b64,
     ]);
     Log.info(
-        'SaveDialogHelper exit=${res.exitCode} stdout=${res.stdout.toString().trim().isEmpty ? '<empty>' : res.stdout.toString().trim()} stderr=${res.stderr.toString().trim()}');
+        "SaveDialogHelper",
+        'exit=${res.exitCode} stdout=${res.stdout.toString().trim().isEmpty ? '<empty>' : res.stdout.toString().trim()} stderr=${res.stderr.toString().trim()}');
     if (res.exitCode == 0 && out.existsSync()) {
-      var content = (await out.readAsString()).trim();
+      var content =
+          (await out.readAsString()).replaceFirst('\uFEFF', '').trim();
       out.deleteSync();
       if (content.isNotEmpty && content != 'CANCEL') {
         return content;
       }
-      Log.info('SaveDialogHelper cancelled or empty output');
+      Log.info("SaveDialogHelper", "cancelled or empty output");
     } else {
       Log.error('SaveDialogHelper failed',
           'exit=${res.exitCode} outputExists=${out.existsSync()}');
