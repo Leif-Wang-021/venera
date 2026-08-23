@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 
@@ -368,14 +369,18 @@ Future<void> saveFile(
   }
 }
 
-/// Saves [file] on Windows using an in-app dialog instead of the native file
-/// dialog, avoiding third-party shell-extension RPC failures (0x6BA).
+/// Saves [file] on Windows using the native Explorer save dialog, but running
+/// the dialog in a separate PowerShell process so third-party shell-extension
+/// failures (e.g. Baidu Netdisk / OneDrive RPC 0x6BA) cannot crash Venera.
+/// If the native dialog cannot be used, falls back to the in-app dialog.
 Future<void> saveFileOnWindows(File file, String filename) async {
-  final target = await showWindowsSaveDialog(filename);
-  if (target == null || target.isEmpty) {
+  var dest = await _pickNativeWindowsSavePath(filename);
+  if (dest == null || dest.isEmpty) {
+    dest = await showWindowsSaveDialog(filename);
+  }
+  if (dest == null || dest.isEmpty) {
     return;
   }
-  var dest = target;
   if (!p.isAbsolute(dest)) {
     var home = Platform.environment['USERPROFILE'] ?? '';
     dest = p.join(home, 'Documents', p.basename(dest));
@@ -385,6 +390,52 @@ Future<void> saveFileOnWindows(File file, String filename) async {
   } catch (e) {
     App.rootContext.showMessage(message: e.toString());
   }
+}
+
+/// Picks a save path using a native Windows SaveFileDialog inside an isolated
+/// PowerShell process. Returns null when cancelled or the helper fails.
+Future<String?> _pickNativeWindowsSavePath(String filename) async {
+  try {
+    final out = p.join(Directory.systemTemp.path, 'venera_save_path.txt');
+    final f = File(out);
+    if (f.existsSync()) {
+      f.deleteSync();
+    }
+    final safeName = filename.replaceAll("'", "''");
+    final script = '''
+Add-Type -AssemblyName System.Windows.Forms
+\$out = '$out'
+\$dlg = New-Object System.Windows.Forms.SaveFileDialog
+\$dlg.FileName = '$safeName'
+\$dlg.Filter = 'All files (*.*)|*.*'
+\$dlg.OverwritePrompt = \$true
+\$dlg.InitialDirectory = [Environment]::GetFolderPath('MyDocuments')
+if (\$dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+  \$dlg.FileName | Out-File -FilePath \$out -Encoding ASCII
+} else {
+  'CANCEL' | Out-File -FilePath \$out -Encoding ASCII
+}
+''';
+    final b64 = base64Encode(utf8.encode(script));
+    final res = await Process.run('powershell.exe', [
+      '-NoProfile',
+      '-STA',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-EncodedCommand',
+      b64,
+    ]);
+    if (res.exitCode == 0 && f.existsSync()) {
+      var content = (await f.readAsString()).trim();
+      f.deleteSync();
+      if (content.isNotEmpty && content != 'CANCEL') {
+        return content;
+      }
+    }
+  } catch (_) {
+    // ignore; fall back to in-app dialog
+  }
+  return null;
 }
 
 /// Shows a simple in-app "Save As" dialog and returns the chosen path.
