@@ -431,8 +431,12 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
       await LocalManager().saveCurrentDownloadingTasks();
     }
 
+    final overallStart = DateTime.now();
+    final startDownloadedCount = _downloadedCount;
     while (_chapter < _images!.length) {
       var images = _images![_images!.keys.elementAt(_chapter)]!;
+      var chapterStart = DateTime.now();
+      var chapterStartCount = _downloadedCount;
       tasks.clear();
       while (_index < images.length) {
         _scheduleTasks();
@@ -451,10 +455,32 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
         _message = "$_downloadedCount/$_totalCount";
         await _persistTaskProgress();
       }
+      var chapterSeconds =
+          DateTime.now().difference(chapterStart).inMilliseconds / 1000;
+      var chapterImages = _downloadedCount - chapterStartCount;
+      if (chapterImages > 0 && chapterSeconds > 0) {
+        Log.info(
+          "Download",
+          "Chapter '${_images!.keys.elementAt(_chapter)}' finished: "
+              "$chapterImages images in ${chapterSeconds.toStringAsFixed(1)}s "
+              "(${(chapterImages / chapterSeconds).toStringAsFixed(2)} img/s, "
+              "threads=$_maxConcurrentTasks)",
+        );
+      }
       _index = 0;
       _chapter++;
     }
 
+    var totalSeconds =
+        DateTime.now().difference(overallStart).inMilliseconds / 1000;
+    var totalImages = _downloadedCount - startDownloadedCount;
+    if (totalImages > 0 && totalSeconds > 0) {
+      Log.info(
+        "Download",
+        "Task finished: $totalImages images in ${totalSeconds.toStringAsFixed(1)}s "
+            "(${(totalImages / totalSeconds).toStringAsFixed(2)} img/s avg)",
+      );
+    }
     LocalManager().completeTask(this);
     stopRecorder();
   }

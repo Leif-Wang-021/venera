@@ -175,9 +175,20 @@ class AppDio with DioMixin {
 }
 
 class RHttpAdapter implements HttpClientAdapter {
-  Future<rhttp.ClientSettings> get settings async {
-    var proxy = await getProxy();
+  /// Connection pool: one persistent Rust client per distinct network
+  /// settings signature. Reusing clients keeps TCP/TLS connections alive
+  /// across requests. Previously every request created a fresh client via
+  /// rhttp.Rhttp.request(), paying a full DNS+TCP+TLS handshake each time,
+  /// which dominated image download latency.
+  static final Map<String, Future<rhttp.RhttpClient>> _clientPool = {};
+  static const int _maxPooledClients = 6;
 
+  static rhttp.ClientSettings _buildSettings({
+    String? proxy,
+    required bool verifyCertificates,
+    required bool sni,
+    required Map<String, List<String>> dnsOverrides,
+  }) {
     return rhttp.ClientSettings(
       proxySettings: proxy == null
           ? const rhttp.ProxySettings.noProxy()
@@ -189,16 +200,16 @@ class RHttpAdapter implements HttpClientAdapter {
         keepAlivePing: Duration(seconds: 30),
       ),
       throwOnStatusCode: false,
-      dnsSettings: rhttp.DnsSettings.static(overrides: _getOverrides()),
+      dnsSettings: rhttp.DnsSettings.static(overrides: dnsOverrides),
       tlsSettings: rhttp.TlsSettings(
-        sni: appdata.settings['sni'] != false,
-        verifyCertificates: appdata.settings['ignoreBadCertificate'] != true,
+        sni: sni,
+        verifyCertificates: verifyCertificates,
       ),
     );
   }
 
   static Map<String, List<String>> _getOverrides() {
-    if (!appdata.settings['enableDnsOverrides'] == true) {
+    if (appdata.settings['enableDnsOverrides'] != true) {
       return {};
     }
     var config = appdata.settings["dnsOverrides"];
@@ -227,10 +238,42 @@ class RHttpAdapter implements HttpClientAdapter {
       options.headers['User-Agent'] = "venera/v${App.version}";
     }
 
-    var res = await rhttp.Rhttp.request(
+    var proxy = await getProxy();
+    var verifyCertificates = appdata.settings['ignoreBadCertificate'] != true;
+    var sni = appdata.settings['sni'] != false;
+    var dnsOverrides = _getOverrides();
+    var poolKey = "$proxy|$verifyCertificates|$sni|"
+        "${dnsOverrides.entries.map((e) => "${e.key}=${e.value.join(',')}").join(';')}";
+    var pooled = _clientPool.putIfAbsent(poolKey, () {
+      return rhttp.RhttpClient.create(
+        settings: _buildSettings(
+          proxy: proxy,
+          verifyCertificates: verifyCertificates,
+          sni: sni,
+          dnsOverrides: dnsOverrides,
+        ),
+      );
+    });
+    rhttp.RhttpClient client;
+    try {
+      client = await pooled;
+    } catch (e) {
+      // Do not keep a failed creation cached; allow a retry next request.
+      if (identical(_clientPool[poolKey], pooled)) {
+        _clientPool.remove(poolKey);
+      }
+      rethrow;
+    }
+    while (_clientPool.length > _maxPooledClients) {
+      var oldest = _clientPool.keys.first;
+      if (oldest == poolKey && _clientPool.length == 1) break;
+      var entry = _clientPool.remove(oldest);
+      entry?.then((c) => c.dispose()).catchError((_) {});
+    }
+
+    var res = await client.request(
       method: rhttp.HttpMethod(options.method),
       url: options.uri.toString(),
-      settings: await settings,
       expectBody: rhttp.HttpExpectBody.stream,
       body: requestStream == null ? null : rhttp.HttpBody.stream(requestStream),
       headers: rhttp.HttpHeaders.rawMap(
