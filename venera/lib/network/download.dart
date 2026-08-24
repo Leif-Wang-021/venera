@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:isolate';
+import 'dart:math';
 
 import 'package:flutter/widgets.dart' show ChangeNotifier;
 import 'package:flutter_saf/flutter_saf.dart';
@@ -636,7 +637,24 @@ class _ImageDownloadWrapper {
 
   var completers = <Completer<_ImageDownloadWrapper>>[];
 
-  var retry = 3;
+  var retry = 4;
+
+  /// Number of retries already used for the current image.
+  int _attempts = 0;
+
+  /// Exponential backoff with jitter before a retry. Transient server
+  /// errors (e.g. Cloudflare 520/521/530, 429) need time to recover;
+  /// retrying immediately hammers the origin and wastes all attempts
+  /// within milliseconds. Delays: ~0.8s, 1.6s, 3.2s, 6.4s (cap 8s).
+  Future<void> _backoffBeforeRetry() async {
+    var ms = min(800 * (1 << _attempts.clamp(0, 4)), 8000);
+    ms = (ms * (0.85 + Random().nextDouble() * 0.3)).round();
+    var waited = 0;
+    while (waited < ms && !isCancelled) {
+      await Future.delayed(const Duration(milliseconds: 100));
+      waited += 100;
+    }
+  }
 
   void start() async {
     int lastBytes = 0;
@@ -667,6 +685,11 @@ class _ImageDownloadWrapper {
       Log.error("Download", e.toString(), s);
       retry--;
       if (retry > 0) {
+        await _backoffBeforeRetry();
+        _attempts++;
+        if (isCancelled) {
+          return;
+        }
         start();
         return;
       }
