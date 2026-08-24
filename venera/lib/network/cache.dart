@@ -128,6 +128,18 @@ class NetworkCacheManager implements Interceptor {
             ..set('venera-cache', 'true'),
           statusCode: 200,
         ));
+      } else if (response.statusCode == 210) {
+        // 210 = source rate limiting. Re-issuing the real GET now would only
+        // deepen the throttle (and the JS layer would sleep 40s per hit).
+        // Keep serving the cached copy; it will be refreshed later once the
+        // limit window clears.
+        return handler.resolve(Response(
+          requestOptions: options,
+          data: cache.data,
+          headers: Headers.fromMap(cache.responseHeaders)
+            ..set('venera-cache', 'true'),
+          statusCode: 200,
+        ));
       }
     }
     removeCache(options.uri);
@@ -185,7 +197,11 @@ class NetworkCacheManager implements Interceptor {
     if (response.requestOptions.method != "GET") {
       return handler.next(response);
     }
-    if (response.statusCode != null && response.statusCode! >= 400) {
+    // Only cache real successes. Statuses like 210 (source rate limiting)
+    // are < 400 but must NEVER enter the cache: a cached 210 would be
+    // served instantly to every JS-side retry, turning one rate-limit hit
+    // into a chain of 40s sleeps (see product_log 2026-08-24 section 七).
+    if (response.statusCode == null || response.statusCode! != 200) {
       return handler.next(response);
     }
     var size = _calculateSize(response.data);

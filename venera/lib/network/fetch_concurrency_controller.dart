@@ -109,6 +109,12 @@ class FetchConcurrencyController {
 
   int get allowedConcurrent => currentThreads;
 
+  /// True while in BACKOFF and the cooldown has not expired yet. Callers
+  /// should pause dispatching NEW requests during this window so the source
+  /// quota recovers, instead of burning it at a lower concurrency.
+  bool get isCoolingDown =>
+      state == FetchCcState.backoff && _clock().isBefore(cooldownUntil);
+
   void record({
     required int latencyMs,
     required bool success,

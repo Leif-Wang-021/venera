@@ -158,5 +158,25 @@ void main() {
       'T11d still parked at verified-safe 5 during longer cooldown');
   expect(c.safeThreads == 5, 'T11e safeThreads pinned at 5');
 
+  // --- T12: isCoolingDown gates NEW dispatches during cooldown ----------
+  c = make(3);
+  expect(c.isCoolingDown == false, 'T12a normal -> not cooling');
+  adv(31);
+  feedFast(c, 12); // -> PROBING 6? initial 3 -> probe to 4
+  expect(c.state == FetchCcState.probing && c.currentThreads == 4,
+      'T12b probing 4');
+  c.record(latencyMs: 40000, success: true, throttled: true); // fail
+  expect(
+      c.state == FetchCcState.backoff &&
+          c.currentThreads == 3 &&
+          c.isCoolingDown == true,
+      'T12c backoff cooling: caller must pause new requests');
+  adv(15); // still inside 30s cooldown
+  expect(c.isCoolingDown == true, 'T12d mid-cooldown still pausing');
+  adv(16); // past cooldownUntil
+  expect(c.isCoolingDown == false, 'T12e cooldown expired, dispatch may resume');
+  c.record(latencyMs: 700, success: true, throttled: false);
+  expect(c.state == FetchCcState.probing, 'T12f resumes via PROBING');
+
   print('ALL PASS');
 }

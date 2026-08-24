@@ -396,8 +396,13 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
           continue;
         }
 
-        // Wait for an available permit before hitting the source.
-        while (_isRunning && !_isError && active >= cc.allowedConcurrent) {
+        // Wait for an available permit before hitting the source. While the
+        // controller is in BACKOFF cooldown we dispatch NOTHING new: firing
+        // more requests at lower concurrency still burns the exhausted
+        // quota and chains 40s JS-side penalties (log-evidenced stalls).
+        while (_isRunning &&
+            !_isError &&
+            (active >= cc.allowedConcurrent || cc.isCoolingDown)) {
           await Future.delayed(const Duration(milliseconds: 50));
         }
         if (!_isRunning || _isError) {
@@ -417,13 +422,15 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
           });
           // Record BEFORE any early return so every attempt feeds the
           // controller. Source scripts swallow HTTP 210 and turn it into
-          // very long internal waits (e.g. copy_manga sleeps 40s+), so a
-          // >=15s list request is treated as an explicit rate-limit hit.
+          // very long internal waits (e.g. hot_manga/copy_manga sleep 40s),
+          // so a >=15s list request is treated as an explicit rate-limit
+          // hit. Plain errors are NOT throttles (they have their own retry
+          // path) and must not trigger BACKOFF.
           final latencyMs = stopwatch.elapsedMilliseconds;
           cc.record(
             latencyMs: latencyMs,
             success: !res.error,
-            throttled: latencyMs >= 15000 || res.error,
+            throttled: latencyMs >= 15000,
           );
           if (!_isRunning || _isError) {
             return;
