@@ -376,17 +376,17 @@ Future<void> runHeadlessMode(List<String> args) async {
       // to the user's library) and samples its public speed getter every
       // second — the end-to-end verification of the speed pipeline:
       // wrapper.onData -> _TransferSpeedMixin -> task.speed.
-      // dltask <sourceKey> <comicId> <chapterId> [seconds=25]
+      // dltask <sourceKey> <comicId> <chapterId[,chapterId...]> [seconds=25]
       var rest2 = args.sublist(commandIndex + 1);
       if (rest2.length < 3) {
         cliPrint({'status': 'error',
-          'message': 'usage: dltask <sourceKey> <comicId> <chapterId> '
+          'message': 'usage: dltask <sourceKey> <comicId> <chapterId[,chapter]> '
               '[seconds]'});
         exit(1);
       }
       var sourceKey = rest2[0];
       var comicId = rest2[1];
-      var chapterId = rest2[2];
+      var chapterIds = rest2[2].split(',');
       var seconds = rest2.length > 3 ? int.tryParse(rest2[3]) ?? 25 : 25;
       var source = ComicSource.find(sourceKey);
       if (source == null) {
@@ -394,12 +394,12 @@ Future<void> runHeadlessMode(List<String> args) async {
         exit(1);
       }
       hPrint('[dltask] creating real ImagesDownloadTask '
-          'comic=$comicId chapter=$chapterId');
+          'comic=$comicId chapters=${chapterIds.length} first=${chapterIds.first}');
       var task = ImagesDownloadTask(
         source: source,
         comicId: comicId,
         comicTitle: 'headless-bench',
-        chapters: [chapterId],
+        chapters: chapterIds,
       );
       task.resume();
       final sw2 = Stopwatch()..start();
