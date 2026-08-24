@@ -68,7 +68,7 @@ class FetchConcurrencyController {
     this.probeMinDuration = const Duration(seconds: 20),
     this.baseCooldown = const Duration(seconds: 30),
     this.maxCooldown = const Duration(seconds: 300),
-    this.maxProbeFailures = 2,
+    this.maxProbeFailures = 1,
     DateTime Function()? clock,
     void Function(String message)? onEvent,
   })  : _clock = clock ?? DateTime.now,
@@ -114,9 +114,12 @@ class FetchConcurrencyController {
 
   /// Consecutive PROBE failures (reset on probe success). Once it reaches
   /// [maxProbeFailures] we stop trying to raise concurrency for the rest of
-  /// this fetch run and settle at [safeThreads]: with a source whose penalty
-  /// window lasts minutes, endless probe cycles only re-trigger the limit
-  /// and stretch stalls exponentially (log 2026-08-24 section 八).
+  /// this fetch run and settle at [safeThreads]. Default 1: for a source
+  /// whose penalty window lasts minutes, EVERY probe attempt costs a full
+  /// round of JS-side 210 sleeps (~20-60s drain, log section 九) — retrying
+  /// probes only adds stalls without any realistic chance of the limit
+  /// lifting mid-task. Healthy sources succeed their first probe and are
+  /// unaffected.
   int consecutiveProbeFailures = 0;
   bool probeDisabled = false;
 
@@ -325,7 +328,15 @@ class FetchConcurrencyController {
     final cooldownSec =
         (baseCooldown.inSeconds * (1 << (failureCount - 1))).clamp(
             baseCooldown.inSeconds, maxCooldown.inSeconds).toInt();
-    cooldownUntil = now.add(Duration(seconds: cooldownSec));
+    // Once probing is disabled, escalation loses its purpose: the doubled
+    // cooldown existed to space out PROBE retries. Resume at the settled
+    // level after the plain base pause instead (log section 九).
+    final effectiveCooldown = probeDisabled
+        ? (cooldownSec > baseCooldown.inSeconds
+            ? baseCooldown.inSeconds
+            : cooldownSec)
+        : cooldownSec;
+    cooldownUntil = now.add(Duration(seconds: effectiveCooldown));
     state = FetchCcState.backoff;
     _stateSince = now;
     _lastAdjustAt = now;
@@ -333,7 +344,7 @@ class FetchConcurrencyController {
     _window.clear(); // one adjustment per control cycle; drop stale evidence
     _log(
         'BACKOFF ($reason) threads=$currentThreads safe=$safeThreads '
-        'cooldown=${cooldownSec}s (failure#$failureCount'
+        'cooldown=${effectiveCooldown}s (failure#$failureCount'
         '${probeDisabled ? ", probing disabled" : ""})');
   }
 

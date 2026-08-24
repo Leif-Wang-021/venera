@@ -8,7 +8,7 @@ late DateTime _now;
 DateTime _clock() => _now;
 void adv(int seconds) => _now = _now.add(Duration(seconds: seconds));
 
-FetchConcurrencyController make(int initial, {int maxProbeFailures = 2}) {
+FetchConcurrencyController make(int initial, {int maxProbeFailures = 1}) {
   _now = DateTime(2026, 8, 24, 20, 0, 0);
   return FetchConcurrencyController(
     initialThreads: initial,
@@ -43,15 +43,16 @@ void main() {
   expect(c.state == FetchCcState.probing && c.currentThreads == 6,
       'T1b after stable window -> PROBING 6');
 
-  // --- T2: throttle during probe -> 6->5 BACKOFF, safe stays 5 --------
+  // --- T2: throttle during FIRST probe -> immediate settle path --------
   c.record(latencyMs: 40000, success: true, throttled: true);
   expect(
       c.state == FetchCcState.backoff &&
           c.currentThreads == 5 &&
           c.safeThreads == 5 &&
           c.failureCount == 1 &&
-          !c.probeDisabled,
-      'T2 probe throttle -> 6->5 BACKOFF safe=5 (fail 1/2)');
+          c.consecutiveProbeFailures == 1 &&
+          c.probeDisabled,
+      'T2 first probe throttle -> BACKOFF safe=5 AND probing DISABLED');
 
   // --- T3: healthy requests during cooldown do NOT raise --------------
   adv(10);
@@ -59,13 +60,13 @@ void main() {
   expect(c.state == FetchCcState.backoff && c.currentThreads == 5,
       'T3 cooldown blocks increase despite healthy requests');
 
-  // --- T4: first-cooldown expiry still retries via PROBING ------------
-  adv(21); // past 30s cooldown
-  c.record(latencyMs: 700, success: true, throttled: false);
+  // --- T13: STALE throttled completion must not kill a fresh state ----
+  // (re-armed here on a fresh controller before its first probe)
+  c = make(5);
+  adv(31);
+  feedFast(c, 12); // -> PROBING 6
   expect(c.state == FetchCcState.probing && c.currentThreads == 6,
-      'T4 cooldown end -> PROBING retry 6');
-
-  // --- T13: STALE throttled completion must not kill a fresh probe ----
+      'T13a enter probe 6');
   final epBefore = c.epoch;
   c.record(
       latencyMs: 40000,
@@ -74,21 +75,20 @@ void main() {
       epochAtStart: epBefore - 1); // dispatched before this probe regime
   expect(
       c.state == FetchCcState.probing && c.currentThreads == 6,
-      'T13 stale in-flight throttle ignored by fresh probe');
+      'T13b stale in-flight throttle ignored by fresh probe');
   // A genuinely current-regime throttle still fails it immediately:
   c.record(latencyMs: 40000, success: true, throttled: true);
   expect(
       c.state == FetchCcState.backoff &&
           c.currentThreads == 5 &&
-          c.failureCount == 2 &&
-          c.consecutiveProbeFailures == 2 &&
           c.probeDisabled,
-      'T5 second failure -> BACKOFF 60s AND probing DISABLED');
-  final cd2 = c.cooldownUntil.difference(_now).inSeconds;
-  expect(cd2 >= 59 && cd2 <= 61, 'T5b cooldown doubled to ~60s (${cd2}s)');
+      'T13c genuine probe throttle -> BACKOFF + disabled');
+  final cdSettle = c.cooldownUntil.difference(_now).inSeconds;
+  expect(cdSettle >= 29 && cdSettle <= 31,
+      'T13d disabled-probe cooldown capped at base 30s (${cdSettle}s)');
 
-  // --- T14: after cap reached, expiry SETTLES at safeThreads ----------
-  adv(61);
+  // --- T14: after the single allowed failure, expiry SETTLES ----------
+  adv(31); // base 30s cooldown (capped, not doubled)
   feedFast(c, 12); // triggers evaluation past cooldown
   expect(
       c.state == FetchCcState.normal &&
@@ -185,27 +185,22 @@ void main() {
   adv(31);
   feedFast(c, 12); // -> PROBING 6
   expect(c.currentThreads == 6, 'T11a enter probe 6');
-  c.record(latencyMs: 40000, success: true, throttled: true); // fail #1
+  c.record(latencyMs: 40000, success: true, throttled: true); // fail -> disable
   adv(29); // just before cooldown ends
   feedFast(c, 20);
   expect(c.state == FetchCcState.backoff && c.currentThreads == 5,
       'T11b no raise before cooldown elapses');
   adv(2);
-  c.record(latencyMs: 700, success: true, throttled: false); // -> PROBING 6
-  c.record(latencyMs: 41000, success: true, throttled: true); // fail #2
-  expect(c.currentThreads == 5 && c.failureCount == 2 && c.probeDisabled,
-      'T11c retried once only, failed -> disable probing');
-  adv(61);
-  feedFast(c, 25);
+  feedFast(c, 25); // past cooldown: settles instead of probing again
   expect(
       c.state == FetchCcState.normal &&
           c.currentThreads == 5 &&
           c.safeThreads == 5,
-      'T11d settled permanently at verified-safe 5');
+      'T11c settled permanently at verified-safe 5');
   adv(120);
   feedFast(c, 30);
   expect(c.currentThreads == 5,
-      'T11e even long-term health never re-escalates within this run');
+      'T11d even long-term health never re-escalates within this run');
 
   // --- T12: isCoolingDown gates NEW dispatches during cooldown ----------
   c = make(3);
@@ -219,14 +214,16 @@ void main() {
       c.state == FetchCcState.backoff &&
           c.currentThreads == 3 &&
           c.isCoolingDown == true &&
-          !c.probeDisabled,
-      'T12c backoff cooling: caller must pause new requests (fail 1/2)');
+          c.probeDisabled,
+      'T12c backoff cooling: caller must pause new requests (disabled)');
   adv(15); // still inside 30s cooldown
   expect(c.isCoolingDown == true, 'T12d mid-cooldown still pausing');
   adv(16); // past cooldownUntil
   expect(c.isCoolingDown == false, 'T12e cooldown expired, dispatch may resume');
   c.record(latencyMs: 700, success: true, throttled: false);
-  expect(c.state == FetchCcState.probing, 'T12f resumes via PROBING');
+  expect(
+      c.state == FetchCcState.normal && c.currentThreads == 3,
+      'T12f resumes SETTLED at safe=3 (no re-probe)');
 
   print('ALL PASS');
 }
