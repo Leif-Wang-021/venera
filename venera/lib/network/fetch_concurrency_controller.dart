@@ -28,6 +28,7 @@ class FetchRequestResult {
     required this.success,
     required this.throttled,
     required this.concurrencyAtStart,
+    this.epochAtStart,
   });
 
   final DateTime at;
@@ -42,6 +43,13 @@ class FetchRequestResult {
   /// Concurrency at the moment this request STARTED (required to attribute
   /// slow requests to the right thread count).
   final int concurrencyAtStart;
+
+  /// Controller epoch captured when the request was dispatched. Requests
+  /// that started before the latest state transition are STALE: their
+  /// latency/throttle verdict belongs to a regime that is already gone and
+  /// must not fail a freshly started probe or re-trigger backoff.
+  /// null (= unknown / always fresh) is treated as current.
+  final int? epochAtStart;
 }
 
 class FetchConcurrencyController {
@@ -60,6 +68,7 @@ class FetchConcurrencyController {
     this.probeMinDuration = const Duration(seconds: 20),
     this.baseCooldown = const Duration(seconds: 30),
     this.maxCooldown = const Duration(seconds: 300),
+    this.maxProbeFailures = 2,
     DateTime Function()? clock,
     void Function(String message)? onEvent,
   })  : _clock = clock ?? DateTime.now,
@@ -87,6 +96,7 @@ class FetchConcurrencyController {
   final Duration probeMinDuration;
   final Duration baseCooldown;
   final Duration maxCooldown;
+  final int maxProbeFailures;
   final DateTime Function() _clock;
   final void Function(String message)? _onEvent;
 
@@ -101,6 +111,19 @@ class FetchConcurrencyController {
   FetchCcState state = FetchCcState.normal;
 
   int failureCount = 0;
+
+  /// Consecutive PROBE failures (reset on probe success). Once it reaches
+  /// [maxProbeFailures] we stop trying to raise concurrency for the rest of
+  /// this fetch run and settle at [safeThreads]: with a source whose penalty
+  /// window lasts minutes, endless probe cycles only re-trigger the limit
+  /// and stretch stalls exponentially (log 2026-08-24 section 八).
+  int consecutiveProbeFailures = 0;
+  bool probeDisabled = false;
+
+  /// Bumped on every state transition. Requests dispatched under an older
+  /// epoch are stale and excluded from all control decisions.
+  int _epoch = 0;
+  int get epoch => _epoch;
 
   DateTime _stateSince = DateTime.now();
   DateTime _lastAdjustAt = DateTime.now();
@@ -119,6 +142,7 @@ class FetchConcurrencyController {
     required int latencyMs,
     required bool success,
     required bool throttled,
+    int? epochAtStart,
   }) {
     final now = _clock();
     _window.addLast(FetchRequestResult(
@@ -127,6 +151,7 @@ class FetchConcurrencyController {
       success: success,
       throttled: throttled,
       concurrencyAtStart: currentThreads,
+      epochAtStart: epochAtStart,
     ));
     while (_window.length > windowSize) {
       _window.removeFirst();
@@ -139,15 +164,16 @@ class FetchConcurrencyController {
   void _evaluate(DateTime now) {
     final last = _window.isNotEmpty ? _window.last : null;
 
-    // Priority 1: explicit rate limiting.
-    // NOTE: no rate gate here on purpose — the very first explicit throttle
-    // MUST react immediately. Cascade protection comes from the BACKOFF
-    // state itself: entering it clears the window and further throttle
-    // reports land in the backoff branch and are ignored.
-    if (last != null && last.throttled) {
+    // Priority 1: explicit rate limiting — but only from requests dispatched
+    // under the CURRENT regime. A throttled completion from a request that
+    // started before the latest transition (e.g. a JS-side 40s sleep still
+    // draining when a probe begins) must not instantly kill the new state.
+    if (last != null &&
+        last.throttled &&
+        !_isStale(last)) {
       switch (state) {
         case FetchCcState.probing:
-          _toBackoff(now, 'rate limited during probe');
+          _toBackoff(now, 'rate limited during probe', fromProbe: true);
           return;
         case FetchCcState.normal:
           _toBackoff(now, 'rate limited');
@@ -164,8 +190,8 @@ class FetchConcurrencyController {
           _toBackoff(now, 'sustained slow requests');
           break;
         }
-        if (currentThreads >= maxThreads) {
-          break; // stay at ceiling, remain NORMAL
+        if (currentThreads >= maxThreads || probeDisabled) {
+          break; // ceiling reached or probing retired: stay NORMAL
         }
         if (_healthyWindow() &&
             now.difference(_stateSince) >= stableDuration &&
@@ -176,11 +202,12 @@ class FetchConcurrencyController {
 
       case FetchCcState.probing:
         if (_sustainedSlow()) {
-          _toBackoff(now, 'sustained slow during probe');
+          _toBackoff(now, 'sustained slow during probe', fromProbe: true);
           break;
         }
         final probeRecords = _window
-            .where((r) => r.concurrencyAtStart == currentThreads)
+            .where((r) =>
+                !_isStale(r) && r.concurrencyAtStart == currentThreads)
             .toList(growable: false);
         final elapsed = now.difference(probeStartedAt);
         if (probeRecords.length >= probeMinSamples &&
@@ -189,9 +216,11 @@ class FetchConcurrencyController {
             // Probe succeeded: lock in the higher concurrency.
             safeThreads = currentThreads;
             failureCount = 0;
+            consecutiveProbeFailures = 0;
             state = FetchCcState.normal;
             _stateSince = now;
             _lastAdjustAt = now;
+            _epoch++; // fresh regime at the higher level
             _window.clear();
             _log('probe OK -> threads=$currentThreads (safe)');
           }
@@ -202,16 +231,35 @@ class FetchConcurrencyController {
 
       case FetchCcState.backoff:
         if (!now.isBefore(cooldownUntil)) {
-          _log('cooldown ended -> PROBING (try ${currentThreads + 1})');
-          _enterProbing(now);
+          if (probeDisabled) {
+            currentThreads = safeThreads;
+            state = FetchCcState.normal;
+            _stateSince = now;
+            _epoch++;
+            // Fresh regime: later real throttles start from base cooldown
+            // again instead of inheriting the probe-loop escalation.
+            failureCount = 0;
+            _window.clear();
+            _log('cooldown ended -> SETTLED at safe=$safeThreads '
+                '(probing disabled after $consecutiveProbeFailures failures)');
+          } else {
+            _log('cooldown ended -> PROBING (try ${currentThreads + 1})');
+            _enterProbing(now);
+          }
         }
         break;
     }
   }
 
+  bool _isStale(FetchRequestResult r) =>
+      r.epochAtStart != null && r.epochAtStart != _epoch;
+
+  List<FetchRequestResult> get _fresh =>
+      _window.where((r) => !_isStale(r)).toList(growable: false);
+
   // ------------------------------------------------------------------ //
 
-  bool _healthyWindow() => _healthyWindowFor(_window.toList(growable: false));
+  bool _healthyWindow() => _healthyWindowFor(_fresh);
 
   bool _healthyWindowFor(List<FetchRequestResult> rs) {
     if (rs.length < minHealthySamples) return false;
@@ -235,7 +283,7 @@ class FetchConcurrencyController {
 
   bool _sustainedSlow() {
     var slow = 0;
-    for (final r in _window) {
+    for (final r in _fresh) {
       if (!r.success || r.throttled || r.latencyMs > slowLatencyMs) {
         slow++;
       }
@@ -255,11 +303,12 @@ class FetchConcurrencyController {
     probeStartedAt = now;
     _stateSince = now;
     _lastAdjustAt = now;
+    _epoch++; // requests dispatched from now on belong to the probe regime
     _window.clear(); // baseline the probe observation window
     _log('PROBING threads=$currentThreads (safe=$safeThreads)');
   }
 
-  void _toBackoff(DateTime now, String reason) {
+  void _toBackoff(DateTime now, String reason, {bool fromProbe = false}) {
     if (currentThreads > minThreads) {
       currentThreads--;
     }
@@ -267,6 +316,12 @@ class FetchConcurrencyController {
       safeThreads = currentThreads;
     }
     failureCount++;
+    if (fromProbe) {
+      consecutiveProbeFailures++;
+      if (consecutiveProbeFailures >= maxProbeFailures) {
+        probeDisabled = true;
+      }
+    }
     final cooldownSec =
         (baseCooldown.inSeconds * (1 << (failureCount - 1))).clamp(
             baseCooldown.inSeconds, maxCooldown.inSeconds).toInt();
@@ -274,10 +329,12 @@ class FetchConcurrencyController {
     state = FetchCcState.backoff;
     _stateSince = now;
     _lastAdjustAt = now;
+    _epoch++; // in-flight stragglers from the old regime become stale
     _window.clear(); // one adjustment per control cycle; drop stale evidence
     _log(
         'BACKOFF ($reason) threads=$currentThreads safe=$safeThreads '
-        'cooldown=${cooldownSec}s (failure#$failureCount)');
+        'cooldown=${cooldownSec}s (failure#$failureCount'
+        '${probeDisabled ? ", probing disabled" : ""})');
   }
 
   void _log(String message) {

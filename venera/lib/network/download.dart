@@ -410,6 +410,8 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
         }
         active++;
         final stopwatch = Stopwatch()..start();
+        final dispatchEpoch =
+            cc.epoch; // freshness tag for this request's verdict
         try {
           _message = "Fetching image list ($cpCount/$totalCpCount)...";
           notifyListeners();
@@ -431,6 +433,7 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
             latencyMs: latencyMs,
             success: !res.error,
             throttled: latencyMs >= 15000,
+            epochAtStart: dispatchEpoch,
           );
           if (!_isRunning || _isError) {
             return;
