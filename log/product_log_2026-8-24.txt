@@ -188,3 +188,50 @@ $ venera.exe --headless dltask copy_manga ... 40
 - 下载阶段：208 图 **21.33s**（约 9.75 img/s），峰值速度 2.5MB/s
 - 回归：下载功能正常，无失败/跳过
 - 说明：自适应并发在快响应时提高并发、遇到限频时收缩，避免源站风控
+
+---
+
+## 六、抓取并发控制重构为 NORMAL/PROBING/BACKOFF 状态机（22:55）
+
+### 1. 背景与用户反馈
+- 用户复测仍慢，并正确指出旧 ±1 策略存在振荡风险：快请求 +1 → 触发风控 -1 → 又 +1，形成 5↔6 循环。
+- 按 GPT 推荐算法改造为状态机（规格 24 条），并发范围固定 1~6。
+
+### 2. 实现
+- 新文件 `lib/network/fetch_concurrency_controller.dart`（纯 Dart，可脱离 Flutter 单测）：
+  - 三态 NORMAL/PROBING/BACKOFF；`currentThreads`/`safeThreads` 分离；
+  - 滑动窗口 20 条 `FetchRequestResult{latency,success,throttled,concurrencyAtStart}`；
+  - 健康判定：≥10 样本、90% <2s、0 个 >8s、0 风控、稳定 ≥30s 才允许 PROBING；
+  - 2~8s 为滞回死区，单次越界不动作；连续 ≥2 个 >8s 或明确风控才降并发；
+  - BACKOFF 指数冷却 30→60→120→240→300s(封顶)，期间只降不升；
+  - 冷却结束回 PROBING 重试 +1，成功才把 safeThreads 提升到该值并清零 failureCount；
+  - 并发调整原子性：单 isolate 内 record() 同步求值 + 进 BACKOFF 清窗口，
+    多请求同时完成只产生一次调整（T8 实证）。
+- `_fetchImageList` 改为接入控制器：worker 数固定 6，实际并发由
+  `cc.allowedConcurrent` 动态闸门控制，不取消在途请求；
+  风控近似判定：列表请求 ≥15s 即视为源站内部限频等待（JS 吞掉了 HTTP 210）。
+- 用户配置 `imageListThreads` 含义不变，仅作初始值。
+
+### 3. 测试（26 断言全过，虚拟时钟瞬时驱动）
+`dart run test/fetch_concurrency_controller_test.dart`
+- T1 健康但未满观察期不加并发 / 满足后经 PROBING 升 6
+- T2 探测期风控 → 6→5 BACKOFF 且 safe 保持 5
+- T3 冷却期内健康请求不提前升并发
+- T4 冷却结束 → PROBING 而非直接 +1
+- T5 二次失败冷却翻倍 60s；T9 逐级 120s、封顶 300s
+- T6 探测成功锁定 safe=6、failureCount 清零、上限不为 7
+- T7 单次慢请求容忍 / 连续两次 >8s 降并发
+- T8 三个同时完成的风控只降一次
+- T9 下限 1 不变 0
+- T10 2~8s 死区完全不动作
+- T11 反复失败时停在 safe=5，无 5↔6 振荡
+
+### 4. 真实任务回归（22:4x，copy_manga 8 章）
+- 抓取 5.88s（8 API 全 200、0 次 210）；全程无状态转移日志=窗口不足 10 条，
+  状态机正确保持安静；任务完成无错误。
+- 安装包重建 22:55。
+
+### 5. 与规格的偏差说明（按第 24 条要求声明）
+- "明确风控"无法直接读取 HTTP 210（源 JS 内部吞掉），以 ≥15s 列表请求近似；
+- 探测窗口取"≥12 条且 ≥20s"（规格建议 20 条或 30s，取小以适配短任务）；
+- 未新增任何配置项。

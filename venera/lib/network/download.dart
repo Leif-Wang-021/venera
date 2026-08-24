@@ -11,6 +11,7 @@ import 'package:venera/foundation/comic_type.dart';
 import 'package:venera/foundation/local.dart';
 import 'package:venera/foundation/log.dart';
 import 'package:venera/foundation/res.dart';
+import 'package:venera/network/fetch_concurrency_controller.dart';
 import 'package:venera/network/images.dart';
 import 'package:venera/utils/ext.dart';
 import 'package:venera/utils/file_type.dart';
@@ -369,14 +370,15 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
     var cpCount = 0;
     var nextIndex = 0;
 
-    // Adaptive concurrency for the image-list phase only. Sources such as
-    // copy_manga punish sustained parallelism with HTTP 210/40s+ waits, so a
-    // fixed high concurrency can make fetching *slower* (and even trigger
-    // server-side blocks). We start with the user's setting and let actual
-    // per-request latency drive the concurrency between 1 and this cap:
-    // fast responses let us add a worker, slow responses shed workers.
-    const maxFetchConcurrency = 6;
-    var permits = _imageListConcurrency.clamp(1, maxFetchConcurrency).toInt();
+    // Adaptive concurrency for the image-list phase only, driven by a
+    // NORMAL/PROBING/BACKOFF state machine (see
+    // fetch_concurrency_controller.dart). Starts at the user's
+    // imageListThreads setting and converges on the largest verified-safe
+    // concurrency instead of oscillating +/-1 per request.
+    final cc = FetchConcurrencyController(
+      initialThreads: _imageListConcurrency,
+      onEvent: (m) => Log.info("Download", "[fetch-cc] $m"),
+    );
     var active = 0;
 
     Future<void> worker() async {
@@ -395,7 +397,7 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
         }
 
         // Wait for an available permit before hitting the source.
-        while (_isRunning && !_isError && active >= permits) {
+        while (_isRunning && !_isError && active >= cc.allowedConcurrent) {
           await Future.delayed(const Duration(milliseconds: 50));
         }
         if (!_isRunning || _isError) {
@@ -413,6 +415,16 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
             }
             return r.data;
           });
+          // Record BEFORE any early return so every attempt feeds the
+          // controller. Source scripts swallow HTTP 210 and turn it into
+          // very long internal waits (e.g. copy_manga sleeps 40s+), so a
+          // >=15s list request is treated as an explicit rate-limit hit.
+          final latencyMs = stopwatch.elapsedMilliseconds;
+          cc.record(
+            latencyMs: latencyMs,
+            success: !res.error,
+            throttled: latencyMs >= 15000 || res.error,
+          );
           if (!_isRunning || _isError) {
             return;
           }
@@ -426,21 +438,13 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
           cpCount++;
           _message = "Fetching image list ($cpCount/$totalCpCount)...";
           notifyListeners();
-
-          // Adapt concurrency based on the observed cost of this request.
-          final elapsedMs = stopwatch.elapsedMilliseconds;
-          if (elapsedMs < 2000 && permits < maxFetchConcurrency) {
-            permits++;
-          } else if (elapsedMs > 8000 && permits > 1) {
-            permits--;
-          }
         } finally {
           active--;
         }
       }
     }
 
-    await Future.wait(List.generate(maxFetchConcurrency, (_) => worker()));
+    await Future.wait(List.generate(6, (_) => worker()));
   }
 
   @override
