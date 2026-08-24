@@ -17,6 +17,7 @@ import 'package:venera/utils/file_type.dart';
 import 'package:venera/utils/io.dart';
 import 'package:zip_flutter/zip_flutter.dart';
 
+import 'app_dio.dart';
 import 'file_downloader.dart';
 
 abstract class DownloadTask with ChangeNotifier {
@@ -189,6 +190,16 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
   /// Current downloading chapter, index of [_images]
   int _chapter = 0;
 
+  /// Chapters whose persisted image list is being/has been re-fetched due
+  /// to expired time-limited signed URLs (404/410 on resume). One shot per
+  /// chapter per task instance to avoid refresh loops.
+  final Map<String, Future<bool>> _chapterRefresh = {};
+
+  /// Images that exhausted all retries during the current run.
+  int _failedImages = 0;
+
+  final List<String> _failedSamples = [];
+
   int _saveCountSinceLastPersist = 0;
 
   DateTime _lastPersistTime = DateTime.now();
@@ -204,6 +215,60 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
       return v.toInt().clamp(1, 8).toInt();
     }
     return 3;
+  }
+
+  /// Returns the current URL for [index] in [chapter], or null when the
+  /// (possibly refreshed) list no longer contains that index.
+  String? imageFor(String chapter, int index) {
+    var list = _images![chapter];
+    if (list == null || index < 0 || index >= list.length) {
+      return null;
+    }
+    return list[index];
+  }
+
+  /// Re-fetches the image list for [chapter] once. Returns true when a new
+  /// list was obtained. Needed because many sources hand out time-limited
+  /// signed image URLs; restoring a task from disk days later makes every
+  /// stored URL 404, and blind retries can never fix that.
+  Future<bool> refreshChapterImages(String chapter) {
+    return _chapterRefresh.putIfAbsent(chapter, () async {
+      try {
+        if (!_isRunning || comic == null) {
+          return false;
+        }
+        _message = "Refreshing image list...";
+        notifyListeners();
+        var res = await _runWithRetry(() async {
+          var r = await source.loadComicPages!(
+              comicId, chapter.isEmpty ? null : chapter);
+          if (r.error) {
+            throw r.errorMessage!;
+          }
+          return r.data;
+        });
+        if (!_isRunning || res.error || res.data.isEmpty) {
+          return false;
+        }
+        _images![chapter] = res.data;
+        await LocalManager().saveCurrentDownloadingTasks();
+        Log.info("Download",
+            "Refreshed stale image list for chapter '$chapter' (${res.data.length} images)");
+        return true;
+      } catch (e) {
+        Log.error("Download", "Failed to refresh image list: $e");
+        return false;
+      }
+    });
+  }
+
+  /// Called by an image wrapper after all its retries are exhausted, so a
+  /// single dead image no longer aborts the whole task.
+  void onImageGaveUp(String chapter, int index, String url) {
+    _failedImages++;
+    if (_failedSamples.length < 20) {
+      _failedSamples.add(url);
+    }
   }
 
   Future<void> _persistTaskProgress({bool force = false}) async {
@@ -447,9 +512,13 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
           return;
         }
         if (task.error != null) {
-          Log.error("Download", task.error.toString());
-          _setError("Error: ${task.error}");
-          return;
+          // A single dead image must not kill the whole task: record it,
+          // leave its file slot empty and continue with the rest.
+          Log.error(
+            "Download",
+            "Image failed after all retries: ${images[_index]} "
+                "(${task.error})",
+          );
         }
         _index++;
         _downloadedCount++;
@@ -481,6 +550,14 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
         "Task finished: $totalImages images in ${totalSeconds.toStringAsFixed(1)}s "
             "(${(totalImages / totalSeconds).toStringAsFixed(2)} img/s avg)",
       );
+    }
+    if (_failedImages > 0) {
+      Log.error(
+        "Download",
+        "Task finished with $_failedImages failed images; first failed: "
+            "${_failedSamples.take(3).join(', ')}",
+      );
+      _message = "$_downloadedCount/$_totalCount ($_failedImages failed)";
     }
     LocalManager().completeTask(this);
     stopRecorder();
@@ -611,7 +688,7 @@ class _ImageDownloadWrapper {
 
   final int index;
 
-  final String image;
+  String image;
 
   final Directory saveTo;
 
@@ -685,7 +762,21 @@ class _ImageDownloadWrapper {
       Log.error("Download", e.toString(), s);
       retry--;
       if (retry > 0) {
-        await _backoffBeforeRetry();
+        var statusCode = e is DioException ? e.response?.statusCode : null;
+        var deadLink = statusCode == 404 || statusCode == 410;
+        if (deadLink && await task.refreshChapterImages(chapter)) {
+          var fresh = task.imageFor(chapter, index);
+          if (fresh != null && fresh != image) {
+            // Fresh signed URL available: retry immediately, no backoff.
+            image = fresh;
+          } else {
+            await _backoffBeforeRetry();
+          }
+        } else if (!deadLink) {
+          await _backoffBeforeRetry();
+        }
+        // else: dead link that a refresh could not fix — fail fast instead
+        // of burning the whole backoff chain on a permanently gone URL.
         _attempts++;
         if (isCancelled) {
           return;
@@ -694,6 +785,7 @@ class _ImageDownloadWrapper {
         return;
       }
       error = e.toString();
+      task.onImageGaveUp(chapter, index, image);
       for (var c in completers) {
         if (!c.isCompleted) {
           c.complete(this);
