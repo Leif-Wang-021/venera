@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/widgets.dart';
 import 'package:venera/utils/data_sync.dart';
 import 'package:venera/foundation/comic_source/comic_source.dart';
 import 'package:venera/foundation/log.dart';
+import 'package:venera/network/images.dart';
+import 'package:venera/network/download.dart';
 import 'package:venera/pages/comic_source_page.dart';
 import 'package:venera/init.dart';
 import 'package:venera/foundation/follow_updates.dart';
@@ -11,11 +14,32 @@ import 'package:venera/foundation/appdata.dart';
 import 'package:venera/foundation/favorites.dart';
 
 void cliPrint(Map<String, dynamic> data) {
-  print('[CLI PRINT] ${jsonEncode(data)}');
+  hPrint('[CLI PRINT] ${jsonEncode(data)}');
+}
+
+/// Output sink for headless runs. GUI-subsystem executables on Windows do
+/// not attach to the parent console, so every headless output line is
+/// mirrored into this file when `--out=<path>` is provided.
+File? _headlessOut;
+
+void hPrint(String line) {
+  // ignore: avoid_print
+  print(line);
+  _headlessOut?.writeAsStringSync('$line\n', mode: FileMode.append);
 }
 
 Future<void> runHeadlessMode(List<String> args) async {
+  for (var a in args) {
+    if (a.startsWith('--out=')) {
+      try {
+        _headlessOut = File(a.substring('--out='.length));
+        _headlessOut!.writeAsStringSync('', mode: FileMode.write);
+      } catch (_) {}
+    }
+  }
+  hPrint('[headless] started args=$args');
   WidgetsFlutterBinding.ensureInitialized();
+  hPrint('[headless] binding ok');
   if (args.contains('--ignore-disheadless-log')) {
     Log.isMuted = true;
   }
@@ -30,12 +54,22 @@ Future<void> runHeadlessMode(List<String> args) async {
   }
 
   // Need to initialize the app for some features to work
+  hPrint('[headless] init begin');
   await init();
+  hPrint('[headless] init done');
 
   var command = args[commandIndex];
   var subCommand = (commandIndex + 1 < args.length) ? args[commandIndex + 1] : null;
 
-  switch (command) {
+  // Hard watchdog: a hung command must never leave an orphaned process
+  // (single-instance guard would block all later launches).
+  var watchdog = Timer(const Duration(minutes: 10), () {
+    cliPrint({'status': 'error', 'message': 'Headless command timed out.'});
+    exit(3);
+  });
+
+  try {
+    switch (command) {
     case 'webdav':
       if (subCommand == 'up') {
         cliPrint({'status': 'running', 'message': 'Uploading WebDAV data...'});
@@ -234,10 +268,176 @@ Future<void> runHeadlessMode(List<String> args) async {
         });
       }
       break;
+    case 'dlbench': {
+      // Real-pipeline download benchmark:
+      // dlbench <sourceKey> <comicId> <chapterId> [maxImages=30] [threads=8]
+      //         [bandwidthBytesPerSec]
+      // Exercises the exact production primitives: AppDio pooled adapter,
+      // interceptors and the ImageDownloader streaming path, with a 1-second
+      // sampler that mirrors ImagesDownloadTask's speed accounting.
+      var rest = args.sublist(commandIndex + 1);
+      if (rest.length < 3) {
+        cliPrint({'status': 'error',
+          'message': 'usage: dlbench <sourceKey> <comicId> <chapterId> '
+              '[maxImages] [threads] [bandwidthBps]'});
+        exit(1);
+      }
+      var sourceKey = rest[0];
+      var comicId = rest[1];
+      var chapterId = rest[2];
+      var maxImages = rest.length > 3 ? int.tryParse(rest[3]) ?? 30 : 30;
+      var threads = rest.length > 4 ? int.tryParse(rest[4]) ?? 8 : 8;
+      var bandwidth = rest.length > 5
+          ? int.tryParse(rest[5]) ?? 7821200
+          : 7821200; // measured via curl, see product_log_2026-8-24
+
+      var source = ComicSource.find(sourceKey);
+      if (source == null || source.loadComicPages == null) {
+        cliPrint({'status': 'error', 'message': 'Source not found or has no '
+            'loadComicPages: $sourceKey'});
+        exit(1);
+      }
+      var pages = await source.loadComicPages!(comicId, chapterId);
+      if (pages.error || pages.data.isEmpty) {
+        cliPrint({'status': 'error',
+          'message': 'loadComicPages failed: ${pages.errorMessage}'});
+        exit(1);
+      }
+      hPrint('[headless] loadComicPages returned '
+          'error=${pages.error} n=${pages.data.length}');
+      var urls = pages.data.take(maxImages).toList();
+      hPrint('[bench] source=$sourceKey comic=$comicId '
+          'chapter=$chapterId images=${urls.length} threads=$threads');
+      for (var u in urls) {
+        hPrint('[bench] url: $u');
+      }
+
+      var next = 0;
+      var totalBytes = 0;
+      var zeroDeltaEvents = 0;
+      var chunkCounts = <int>[];
+      var peakOneSecond = 0;
+      var pending = 0;
+
+      final timer = Timer.periodic(const Duration(seconds: 1), (t) {
+        hPrint('[bench][t=${t.tick}s] sampled=$pending B/s');
+        if (pending > peakOneSecond) peakOneSecond = pending;
+        pending = 0;
+      });
+
+      Future<void> worker() async {
+        while (true) {
+          var i = next++;
+          if (i >= urls.length) return;
+          int lastBytes = 0;
+          int chunks = 0;
+          await for (var p in ImageDownloader.loadComicImageUnwrapped(
+              urls[i], sourceKey, comicId, chapterId,
+              writeCache: false)) {
+            chunks++;
+            var delta = p.currentBytes - lastBytes;
+            lastBytes = p.currentBytes;
+            pending += delta;
+            totalBytes += delta;
+            if (delta <= 0 && chunks > 1) zeroDeltaEvents++;
+          }
+          chunkCounts.add(chunks);
+          hPrint('[bench] img#$i done chunks=$chunks bytes=$lastBytes');
+        }
+      }
+
+      final sw = Stopwatch()..start();
+      await Future.wait(List.generate(threads, (_) => worker()));
+      sw.stop();
+      timer.cancel();
+
+      chunkCounts.sort();
+      var secs = sw.elapsedMilliseconds / 1000;
+      var avg = totalBytes / 1048576 / secs;
+      var pct = (totalBytes / secs / bandwidth * 100);
+      var summary = {
+        'images': urls.length,
+        'totalMB': double.parse((totalBytes / 1048576).toStringAsFixed(2)),
+        'elapsedS': double.parse(secs.toStringAsFixed(2)),
+        'avgMBSec': double.parse(avg.toStringAsFixed(2)),
+        'peakSampledBSec': peakOneSecond,
+        'bandwidthBps': bandwidth,
+        'pctOfBandwidth': double.parse(pct.toStringAsFixed(1)),
+        'chunksMin': chunkCounts.first,
+        'chunksMax': chunkCounts.last,
+        'zeroDeltaEvents': zeroDeltaEvents,
+      };
+      cliPrint({'status': 'success', 'message': 'dlbench complete.',
+          'data': summary});
+      break;
+    }
+    case 'dltask': {
+      // Runs a REAL ImagesDownloadTask (unregistered, so nothing is written
+      // to the user's library) and samples its public speed getter every
+      // second — the end-to-end verification of the speed pipeline:
+      // wrapper.onData -> _TransferSpeedMixin -> task.speed.
+      // dltask <sourceKey> <comicId> <chapterId> [seconds=25]
+      var rest2 = args.sublist(commandIndex + 1);
+      if (rest2.length < 3) {
+        cliPrint({'status': 'error',
+          'message': 'usage: dltask <sourceKey> <comicId> <chapterId> '
+              '[seconds]'});
+        exit(1);
+      }
+      var sourceKey = rest2[0];
+      var comicId = rest2[1];
+      var chapterId = rest2[2];
+      var seconds = rest2.length > 3 ? int.tryParse(rest2[3]) ?? 25 : 25;
+      var source = ComicSource.find(sourceKey);
+      if (source == null) {
+        cliPrint({'status': 'error', 'message': 'Source not found: $sourceKey'});
+        exit(1);
+      }
+      hPrint('[dltask] creating real ImagesDownloadTask '
+          'comic=$comicId chapter=$chapterId');
+      var task = ImagesDownloadTask(
+        source: source,
+        comicId: comicId,
+        comicTitle: 'headless-bench',
+        chapters: [chapterId],
+      );
+      task.resume();
+      final sw2 = Stopwatch()..start();
+      var maxSpeed = 0;
+      var done = Completer<void>();
+      Timer.periodic(const Duration(seconds: 1), (t) {
+        var s = task.speed;
+        if (s > maxSpeed) maxSpeed = s;
+        hPrint('[dltask][t=${t.tick}s] speed=$s B/s '
+            'state=${task.isRunning ? "running" : (task.isError ? "error" : "done")}'
+            '${task.isError ? " msg=${task.error}" : ""}');
+        if ((!task.isRunning && t.tick > 1) || t.tick >= seconds + 5) {
+          done.complete();
+        }
+      });
+      // Keep sampling until the task settles or the cap is reached.
+      while (!done.isCompleted) {
+        await Future.delayed(const Duration(milliseconds: 200));
+      }
+      cliPrint({'status': task.isError ? 'error' : 'success',
+        'message': 'dltask finished in ${sw2.elapsedMilliseconds}ms',
+        'data': {'peakSpeedBSec': maxSpeed,
+            'error': task.isError ? task.error : null}});
+      if (task.isError) {
+        exit(1);
+      }
+      break;
+    }
     default:
       cliPrint({'status': 'error', 'message': 'Unknown command: $command'});
       exit(1);
+    }
+  } catch (e, st) {
+    cliPrint({'status': 'error', 'message': 'Command failed: $e',
+        'data': {'stack': '$st'}});
+    exit(1);
   }
+  watchdog.cancel();
 
   // Exit after command execution
   exit(0);

@@ -24,8 +24,12 @@ class DataSync with ChangeNotifier {
     ComicSourceManager().addListener(onDataChanged);
     if (App.isDesktop) {
       Future.delayed(const Duration(seconds: 1), () {
-        var controller = WindowFrame.of(App.rootContext);
-        controller.addCloseListener(_handleWindowClose);
+        try {
+          var controller = WindowFrame.of(App.rootContext);
+          controller.addCloseListener(_handleWindowClose);
+        } catch (_) {
+          // Headless mode has no window frame; the close listener is N/A.
+        }
       });
     }
   }

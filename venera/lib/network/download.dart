@@ -28,6 +28,10 @@ abstract class DownloadTask with ChangeNotifier {
 
   bool get isPaused;
 
+  /// Whether the task is actively running (resume() started, not yet
+  /// finished, errored or paused).
+  bool get isRunning;
+
   /// bytes per second
   int get speed;
 
@@ -650,6 +654,12 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
   bool get isPaused => !_isRunning;
 
   @override
+  bool get isRunning => _isRunning;
+
+  /// Last error message; null unless [isError].
+  String? get error => isError ? _message : null;
+
+  @override
   LocalComic toLocalComic() {
     return LocalComic(
       id: comic!.id,
@@ -906,13 +916,19 @@ class ArchiveDownloadTask extends DownloadTask {
   ComicType get comicType => ComicType(source.key.hashCode);
 
   @override
+  bool get isError => _isError;
+
+  @override
+  bool get isRunning => _isRunning;
+
+  /// Last error message; null unless [isError].
+  String? get error => isError ? _message : null;
+
+  @override
   String? get cover => comic.cover;
 
   @override
   String get id => comic.id;
-
-  @override
-  bool get isError => _isError;
 
   @override
   bool get isPaused => !_isRunning;
