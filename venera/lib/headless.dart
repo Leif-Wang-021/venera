@@ -428,6 +428,65 @@ Future<void> runHeadlessMode(List<String> args) async {
       }
       break;
     }
+    case 'fetchbench': {
+      // Image-list fetch benchmark (does NOT download images):
+      // fetchbench <sourceKey> <comicId> <count> <threads>
+      var rest2 = args.sublist(commandIndex + 1);
+      if (rest2.length < 3) {
+        cliPrint({'status': 'error',
+          'message': 'usage: fetchbench <sourceKey> <comicId> <count> [threads]'});
+        exit(1);
+      }
+      var sourceKey = rest2[0];
+      var comicId = rest2[1];
+      var count = int.tryParse(rest2[2]) ?? 6;
+      var threads = rest2.length > 3 ? int.tryParse(rest2[3]) ?? 3 : 3;
+      var source = ComicSource.find(sourceKey);
+      if (source == null || source.loadComicPages == null) {
+        cliPrint({'status': 'error', 'message': 'Source not found or no '
+            'loadComicPages: $sourceKey'});
+        exit(1);
+      }
+      hPrint('[fetchbench] loading comic info $comicId');
+      var info = await source.loadComicInfo!(comicId);
+      if (info.error || info.data.chapters == null) {
+        cliPrint({'status': 'error', 'message': 'loadComicInfo failed'});
+        exit(1);
+      }
+      var chs = info.data.chapters!.allChapters.keys
+          .take(count.clamp(1, 100)).toList();
+      hPrint('[fetchbench] chapters=$chs');
+      var next = 0;
+      var ok = 0;
+      var err = 0;
+      final sw = Stopwatch()..start();
+      Future<void> worker() async {
+        while (true) {
+          var i = next++;
+          if (i >= chs.length) return;
+          try {
+            var r = await source.loadComicPages!(comicId, chs[i]);
+            if (r.error) {
+              err++;
+              hPrint('[fetchbench] ch$i error ${r.errorMessage}');
+            } else {
+              ok++;
+              hPrint('[fetchbench] ch$i images=${r.data.length}');
+            }
+          } catch (e) {
+            err++;
+            hPrint('[fetchbench] ch$i exception $e');
+          }
+        }
+      }
+      await Future.wait(List.generate(threads, (_) => worker()));
+      sw.stop();
+      cliPrint({'status': 'success',
+        'message': 'fetchbench complete',
+        'data': {'chapters': chs.length, 'ok': ok, 'err': err, 'threads': threads,
+          'elapsedS': double.parse((sw.elapsedMilliseconds / 1000).toStringAsFixed(1))}});
+      break;
+    }
     default:
       cliPrint({'status': 'error', 'message': 'Unknown command: $command'});
       exit(1);

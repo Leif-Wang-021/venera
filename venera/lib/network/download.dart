@@ -368,7 +368,16 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
     final totalCpCount = selected.length;
     var cpCount = 0;
     var nextIndex = 0;
-    final concurrency = _imageListConcurrency;
+
+    // Adaptive concurrency for the image-list phase only. Sources such as
+    // copy_manga punish sustained parallelism with HTTP 210/40s+ waits, so a
+    // fixed high concurrency can make fetching *slower* (and even trigger
+    // server-side blocks). We start with the user's setting and let actual
+    // per-request latency drive the concurrency between 1 and this cap:
+    // fast responses let us add a worker, slow responses shed workers.
+    const maxFetchConcurrency = 6;
+    var permits = _imageListConcurrency.clamp(1, maxFetchConcurrency).toInt();
+    var active = 0;
 
     Future<void> worker() async {
       while (_isRunning && !_isError) {
@@ -385,32 +394,53 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
           continue;
         }
 
-        _message = "Fetching image list ($cpCount/$totalCpCount)...";
-        notifyListeners();
-        final res = await _runWithRetry(() async {
-          final r = await source.loadComicPages!(comicId, i);
-          if (r.error) {
-            throw r.errorMessage!;
-          }
-          return r.data;
-        });
+        // Wait for an available permit before hitting the source.
+        while (_isRunning && !_isError && active >= permits) {
+          await Future.delayed(const Duration(milliseconds: 50));
+        }
         if (!_isRunning || _isError) {
           return;
         }
-        if (res.error) {
-          Log.error("Download", res.errorMessage!);
-          _setError("Error: ${res.errorMessage}");
-          return;
+        active++;
+        final stopwatch = Stopwatch()..start();
+        try {
+          _message = "Fetching image list ($cpCount/$totalCpCount)...";
+          notifyListeners();
+          final res = await _runWithRetry(() async {
+            final r = await source.loadComicPages!(comicId, i);
+            if (r.error) {
+              throw r.errorMessage!;
+            }
+            return r.data;
+          });
+          if (!_isRunning || _isError) {
+            return;
+          }
+          if (res.error) {
+            Log.error("Download", res.errorMessage!);
+            _setError("Error: ${res.errorMessage}");
+            return;
+          }
+          _images![i] = res.data;
+          _totalCount += _images![i]!.length;
+          cpCount++;
+          _message = "Fetching image list ($cpCount/$totalCpCount)...";
+          notifyListeners();
+
+          // Adapt concurrency based on the observed cost of this request.
+          final elapsedMs = stopwatch.elapsedMilliseconds;
+          if (elapsedMs < 2000 && permits < maxFetchConcurrency) {
+            permits++;
+          } else if (elapsedMs > 8000 && permits > 1) {
+            permits--;
+          }
+        } finally {
+          active--;
         }
-        _images![i] = res.data;
-        _totalCount += _images![i]!.length;
-        cpCount++;
-        _message = "Fetching image list ($cpCount/$totalCpCount)...";
-        notifyListeners();
       }
     }
 
-    await Future.wait(List.generate(concurrency, (_) => worker()));
+    await Future.wait(List.generate(maxFetchConcurrency, (_) => worker()));
   }
 
   @override
