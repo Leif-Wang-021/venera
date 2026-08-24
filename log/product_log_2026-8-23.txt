@@ -291,3 +291,28 @@ _待办以日志最新状态为准，下次开发先读此文件。_
 ### 4. 交付物
 - Windows 安装包：`venera\build\windows\Venera-1.6.3-windows-installer.exe`（23:21，16.8MB）
 - 提交：见仓库 main 最新提交。
+
+---
+
+## 十一、追加（8-24 补记）：本会话全部修改清单与完成度核查结论
+
+> 应要求将上述所有修改汇总留档于本日志，并附 8-24 上午完成的全面核查结果。详细过程见第七/九/十节。
+
+### 1. 修改清单索引（均已在仓库 main 提交）
+
+| 提交 | 任务 | 修改文件 | 要点 | 状态 |
+|---|---|---|---|---|
+| `d0ab284` | Windows 原生保存对话框不弹出 | `venera/lib/utils/io.dart` | `-EncodedCommand` 改 UTF-16LE 编码；结果回写改 `WriteAllText`(UTF-8 无BOM)；读回剥 BOM；加 `-WindowStyle Hidden`；修两处单参 `Log.info` 编译错误 | 代码完成+机理实测通过；**实机弹窗待验证** |
+| `5fc5bbd` | 全局下载提速 | `venera/lib/network/app_dio.dart`、`download.dart` | Rust HTTP 客户端连接池（按设置签名复用，上限6 LRU）；DNS 开关判断修正；章节/任务吞吐审计日志 | ✅ 已实机生效：3 章 3.23~3.40 img/s vs 基线 ~1.97（+64%~73%） |
+| `b748b67` | 下载报错（520 重试风暴） | `venera/lib/network/download.dart` | 图片重试指数退避+抖动（0.8s→1.6s→3.2s→6.4s，上限8s）；重试预算 3→4 | 代码完成；**实机退避待验证** |
+
+### 2. 核查结论（8-24，基于实际证据）
+- 工作区干净无未提交变更；三次提交内容互不重叠；产品日志一~十节各出现一次，无中断导致的重复/损坏。
+- 全量 `flutter analyze`：0 error / 0 warning（仅 8 条上游弃用 info，会话前既有）。
+- 构建产物新鲜度链完整：最后源码编辑 23:18:41 < `data/app.so` 23:21:20 < 安装包 23:21。
+- 澄清一项误报：`Release\venera.exe` mtime Aug 18 属正常——exe 仅 C++ Runner 壳，Dart 业务代码在 `data/app.so`。
+
+### 3. 遗留事项与优先级
+1. **P0（用户实机验证）**：安装 23:21 安装包后 ① 验证保存对话框弹出；② 重下曾报错章节，logs.txt 应出现 `Chapter ... finished` 行而非任务报错。
+2. **P1（观察项）**：23:17 曾出现 6 条瞬时 `tls handshake eof` 建连错误（对端掐断握手，未复现）；若频发则在 `RHttpAdapter.fetch` 对 Connect 类异常做全局透明重试。
+3. **P2（配置仓）**：`venera-configs/index.json` 的 `copy_manga` key 重复（`copy_manga.js` 与 `copy_manga_multi_accounts.js` 同 key），需改独立 key 或移出并在 CI 加唯一性校验。
