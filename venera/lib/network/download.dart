@@ -204,6 +204,13 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
 
   final List<String> _failedSamples = [];
 
+  /// Consecutive dead-link failures within the current chapter. When this
+  /// reaches [_deadLinkChapterSkipThreshold], the remaining images of the
+  /// chapter are cancelled and the task moves on.
+  int _deadLinkFailsInChapter = 0;
+
+  static const int _deadLinkChapterSkipThreshold = 5;
+
   /// Tick counter for periodic [Log] telemetry of the speed pipeline.
   int _speedLogTicks = 0;
 
@@ -234,10 +241,10 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
     return list[index];
   }
 
-  /// Re-fetches the image list for [chapter] once. Returns true when a new
-  /// list was obtained. Needed because many sources hand out time-limited
-  /// signed image URLs; restoring a task from disk days later makes every
-  /// stored URL 404, and blind retries can never fix that.
+  /// Re-fetches the image list for [chapter] once. Returns true when a new,
+  /// different list was obtained. Needed because many sources hand out
+  /// time-limited signed image URLs; restoring a task from disk days later
+  /// makes every stored URL 404, and blind retries can never fix that.
   Future<bool> refreshChapterImages(String chapter) {
     return _chapterRefresh.putIfAbsent(chapter, () async {
       try {
@@ -257,6 +264,15 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
         if (!_isRunning || res.error || res.data.isEmpty) {
           return false;
         }
+        var old = _images![chapter];
+        if (old != null &&
+            old.length == res.data.length &&
+            _urlListEquals(old, res.data)) {
+          Log.info("Download",
+              "Refreshed stale image list for chapter '$chapter' "
+              "but URLs are unchanged (${res.data.length} images)");
+          return false;
+        }
         _images![chapter] = res.data;
         await LocalManager().saveCurrentDownloadingTasks();
         Log.info("Download",
@@ -267,6 +283,16 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
         return false;
       }
     });
+  }
+
+  /// Whether [a] and [b] contain the exact same URLs in the same order.
+  static bool _urlListEquals(List<String> a, List<String> b) {
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /// Called by an image wrapper after all its retries are exhausted, so a
@@ -510,6 +536,7 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
       var images = _images![_images!.keys.elementAt(_chapter)]!;
       var chapterStart = DateTime.now();
       var chapterStartCount = _downloadedCount;
+      _deadLinkFailsInChapter = 0;
       tasks.clear();
       while (_index < images.length) {
         _scheduleTasks();
@@ -526,6 +553,35 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
             "Image failed after all retries: ${images[_index]} "
                 "(${task.error})",
           );
+          if (task.deadLink) {
+            _deadLinkFailsInChapter++;
+            // A chapter whose beginning is almost entirely dead links is
+            // very likely a stale/missing chapter (e.g. signed URLs that
+            // expired and cannot be re-signed by the source). Skip the rest
+            // instead of grinding through every remaining image for hours.
+            if (_deadLinkFailsInChapter >= _deadLinkChapterSkipThreshold) {
+              var remaining = images.length - _index - 1;
+              for (var i = _index + 1; i < images.length; i++) {
+                _failedImages++;
+                if (_failedSamples.length < 20) {
+                  _failedSamples.add(images[i]);
+                }
+              }
+              for (var t in tasks.values) {
+                t.cancel();
+              }
+              Log.error(
+                "Download",
+                "Chapter '${_images!.keys.elementAt(_chapter)}' skipped: "
+                    "$_deadLinkFailsInChapter consecutive dead images "
+                    "($remaining remaining)",
+              );
+              _index = images.length;
+              break;
+            }
+          } else {
+            _deadLinkFailsInChapter = 0;
+          }
         }
         _index++;
         _downloadedCount++;
@@ -729,6 +785,9 @@ class _ImageDownloadWrapper {
 
   String? error;
 
+  /// Whether the terminal failure was caused by a dead link (HTTP 404/410).
+  bool deadLink = false;
+
   bool isCancelled = false;
 
   void cancel() {
@@ -772,6 +831,9 @@ class _ImageDownloadWrapper {
         task.onData(p.currentBytes - lastBytes);
         lastBytes = p.currentBytes;
         if (p.imageBytes != null) {
+          if (isCancelled) {
+            return;
+          }
           Log.info("Download",
               "[io] img#$index chunks=$_chunks bytes=${p.currentBytes}");
           var fileType = detectFileType(p.imageBytes!);
@@ -790,22 +852,35 @@ class _ImageDownloadWrapper {
       }
       Log.error("Download", e.toString(), s);
       retry--;
-      if (retry > 0) {
-        var statusCode = e is DioException ? e.response?.statusCode : null;
-        var deadLink = statusCode == 404 || statusCode == 410;
-        if (deadLink && await task.refreshChapterImages(chapter)) {
-          var fresh = task.imageFor(chapter, index);
-          if (fresh != null && fresh != image) {
-            // Fresh signed URL available: retry immediately, no backoff.
-            image = fresh;
-          } else {
-            await _backoffBeforeRetry();
+      var statusCode = e is DioException ? e.response?.statusCode : null;
+      var deadLink = statusCode == 404 || statusCode == 410;
+      if (deadLink) {
+        this.deadLink = true;
+        var refreshed = await task.refreshChapterImages(chapter);
+        var fresh = refreshed ? task.imageFor(chapter, index) : null;
+        if (refreshed && fresh != null && fresh != image) {
+          // Fresh signed URL available: retry immediately, no backoff.
+          image = fresh;
+          _attempts++;
+          if (isCancelled) {
+            return;
           }
-        } else if (!deadLink) {
-          await _backoffBeforeRetry();
+          start();
+          return;
         }
-        // else: dead link that a refresh could not fix — fail fast instead
-        // of burning the whole backoff chain on a permanently gone URL.
+        // A refresh that produced no new URL is a permanently dead link:
+        // fail fast instead of burning the retry/backoff chain.
+        error = e.toString();
+        task.onImageGaveUp(chapter, index, image);
+        for (var c in completers) {
+          if (!c.isCompleted) {
+            c.complete(this);
+          }
+        }
+        return;
+      }
+      if (retry > 0) {
+        await _backoffBeforeRetry();
         _attempts++;
         if (isCancelled) {
           return;

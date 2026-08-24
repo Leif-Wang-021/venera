@@ -126,3 +126,34 @@ $ venera.exe --headless dltask copy_manga ... 40
 
 ### 4. 交付物
 - `Venera-1.6.3-windows-installer.exe`（13:42，16.8MB）含全部修复+headless 测试通道
+
+---
+
+## 四、再次复测后定位：死链章节拖死下载（15:38 修复）
+
+### 1. 速度判定（基于日志事实）
+- **未达到**既定要求：logs.txt 15:07 会话中图片 GET **零 200、全部 404**（如 `1756498755...jpg`），`[speed]` 全程 0，`activeWorkers=2~3`。速度 0 是真实无字节，不是统计故障。
+- 带宽上限仍为早前实测 7.82MB/s；管线基准已证可到 8.78MB/s(112%)。
+
+### 2. 根因分析（日志+本地文件证据）
+| 异常点 | 证据 | 原因 |
+|---|---|---|
+| 当前任务章节 6（`288869.html`）168 张图片全部 404 | logs.txt 15:07 多次同 URL GET 与 `Image failed after all retries` | 存盘列表为已失效/已删除旧图；刷新后源站 HTML 仍返回**同一批 URL** |
+| `Refreshed stale image list ... but URLs are unchanged`（本次新增日志后出现） | 14:59 刷新 288869 返回 168 张，token 与旧列表一致 | 源站活的章节 HTML 里就是这批 404 地址，刷新无法“换新签名” |
+| 任务在死章节逐张重试 | 15:07 同窗口反复请求、`[speed]=0` | 旧逻辑对“刷新成功但列表未变”仍走退避重试，一个章节可拖数小时 |
+| `downloading_tasks.json`：`index=98, chapter=6`, 117 章列表 | 任务停滞在死章节 | 上述死链拖累整体 |
+
+### 3. 全局修复（lib/network/download.dart，已执行）
+1. `refreshChapterImages`：新列表与旧列表**完全一致**时判定未刷新成功，输出 `URLs are unchanged` 并返回 false（不再假成功）。
+2. wrapper catch：死链刷新后若无新 URL → **立即 fail-fast**，不再退避重试；新增 `deadLink` 标记。
+3. 主循环：同一章节**连续 5 张死链** → 取消该章剩余任务、计入失败、`Chapter ... skipped`、跳转下一章。
+4. 取消写入护栏：`isCancelled` 后不再落盘。
+5. 附：headless 无头测试时自动复现用户真实任务，线上实证了新跳过逻辑。
+
+### 4. 回归/实证结果
+- copy_manga 真任务回归（`dltask`）：speed t=5 1.0MB/s、t=6 1.4MB/s、t=7 2.5MB/s、峰值 4.5MB/s，exit=0，正常路径未破坏。
+- 真实 ykmh 任务在无头测试中自动运行：chapter 6→13、downloadedCount 321→350，死章节 `288867/288866/288863/288862` 被快速跳过。
+- `flutter analyze` 0 issue；无残留进程。
+
+### 5. 交付物
+- `Venera-1.6.3-windows-installer.exe`（15:38，16.8MB）
