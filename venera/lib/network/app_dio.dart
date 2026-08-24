@@ -16,6 +16,13 @@ import 'cookie_jar.dart';
 export 'package:dio/dio.dart';
 
 class MyLogInterceptor implements Interceptor {
+  /// Full request/response dumps (headers, bodies) are opt-in via the
+  /// `logNetworkVerbose` setting because they cost real CPU + disk IO on
+  /// every request; with pooled connections and many parallel image
+  /// downloads this overhead is measurable. Errors are always logged.
+  static bool get _verbose =>
+      App.isInitialized && appdata.settings['logNetworkVerbose'] == true;
+
   @override
   void onError(DioException err, ErrorInterceptorHandler handler) {
     Log.error("Network",
@@ -71,6 +78,16 @@ class MyLogInterceptor implements Interceptor {
   @override
   void onResponse(
       Response<dynamic> response, ResponseInterceptorHandler handler) {
+    if (!_verbose) {
+      Log.addLog(
+          (response.statusCode != null && response.statusCode! < 400)
+              ? LogLevel.info
+              : LogLevel.error,
+          "Network",
+          "Response ${response.realUri.toString()} ${response.statusCode}");
+      handler.next(response);
+      return;
+    }
     var headers = response.headers.map.map((key, value) => MapEntry(
         key.toLowerCase(), value.length == 1 ? value.first : value.toString()));
     headers.remove("cookie");
@@ -98,26 +115,30 @@ class MyLogInterceptor implements Interceptor {
   void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
     const String headerMask = "********";
     const String dataMask = "****** DATA_PROTECTED ******";
-    Log.info(
-        "Network",
-        "${options.method} ${options.uri}\n"
-            "headers:\n${
-              options.extra.containsKey("maskHeadersInLog")
-                ? options.headers.map((key, value) =>
-                  MapEntry(
-                    key,
-                    options.extra["maskHeadersInLog"].contains(key)
-                      ? headerMask
-                      : value
-                  ))
-                : options.headers
-            }\n"
-            "data:\n${
-              options.extra["maskDataInLog"] == true
-                ? dataMask
-                : options.data
-            }"
-    );
+    if (_verbose) {
+      Log.info(
+          "Network",
+          "${options.method} ${options.uri}\n"
+              "headers:\n${
+                options.extra.containsKey("maskHeadersInLog")
+                  ? options.headers.map((key, value) =>
+                    MapEntry(
+                      key,
+                      options.extra["maskHeadersInLog"].contains(key)
+                        ? headerMask
+                        : value
+                      ))
+                  : options.headers
+              }\n"
+              "data:\n${
+                options.extra["maskDataInLog"] == true
+                  ? dataMask
+                  : options.data
+              }"
+      );
+    } else {
+      Log.info("Network", "${options.method} ${options.uri}");
+    }
     options.connectTimeout = const Duration(seconds: 15);
     options.receiveTimeout = const Duration(seconds: 15);
     options.sendTimeout = const Duration(seconds: 15);

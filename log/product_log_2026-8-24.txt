@@ -41,3 +41,48 @@
   2. 图片以新 URL 重试并返回 200，章节正常完成输出 `Chapter ... finished` 行；
   3. 任务最终显示 `N/N` 或 `N/M (K failed)`，不再整体报错退出；
   4. 若个别图确已从源站消失，日志会有 `Image failed after all retries: <url>` 且任务继续直至完成。
+
+---
+
+## 二、测试反馈修复：速度显示 0B/s + 下载速度偏慢（带宽实测驱动）
+
+### 0. 带宽实测（问题2基线）
+| 测点 | 结果 |
+|---|---|
+| speed.cloudflare.com __down 50MB | **7.82 MB/s** |
+| proof.ovh.net 100Mb.dat | **8.74 MB/s** |
+| 结论 | 当前线路可用带宽 ≈ **7.8~8.7 MB/s（65~70Mbps）**；75% 目标 ≈ **≥5.9 MB/s** |
+| 应用现状 | ~3.4 img/s ≈ 0.5~0.7 MB/s（约 8%），差距主要来自并发数与每请求开销 |
+
+### 1. 问题1根因分析：速度始终显示 0B/s
+- 展示链路核查：顶栏 `downloading_page.dart` 读 `downloadingTasks.first.speed` → `ImagesDownloadTask.speed → currentSpeed`（1 秒定时器累计字节）；页面已订阅 firstTask/LocalManager 并 setState，静态链路自洽。
+- 无法从既有日志定位（历史日志从未记录过速度值本身），按新规则**给管线加装日志遥测**以获得实证：
+  - `onNextSecond` 每 5 秒输出 `[speed] current=... pending=... activeWorkers=...`；
+  - 每张图完成输出 `[io] img#N chunks=C bytes=B`——若 chunks 恒为 1 即证明池化后响应被整体缓冲、逐块进度消失（速度统计与真实进度的共同疑点）；
+- 同时发现并修复一处**确定性缺陷**：顶栏只统计 `first.speed`，多任务/排队场景下显示的不是实际吞吐 → 改为聚合所有未暂停任务的 speed。
+- 待实机复测：用户跑一次下载后读 logs.txt 的 `[speed]`/`[io]` 行即可二分定位（管线值>0 而界面为 0 → UI 层；管线值=0 → 数据层）。
+
+### 2. 问题2优化方案（全局，无单源特判）
+1. **网络日志开销削减**（app_dio.dart + appdata.dart）：请求/响应的完整头与体转储改为默认关闭（新增设置 `logNetworkVerbose=false`），默认仅记一行 `METHOD url` / `url 状态码`；错误仍全量记录。此前每张图片要拼接并写盘约 2KB 文本（含长 Cookie），高并发下开销可观。
+2. **聚合速度统计**（见上），保证 UI 反映全部工作线程的真实吞吐。
+3. 并发建议：`downloadThreads` 上限本就是 16（用户当前 3）；达到 5.9MB/s 需按源站承受能力调高至 8~12。源站限流属外部约束，不做单源绕行。
+4. 带宽自测方法留存：`curl -o NUL -w '%{speed_download}' https://speed.cloudflare.com/__down?bytes=52428800`
+
+### 3. 回归验证（全部历史修复点逐一核查，均通过）
+| # | 历史修复点 | 核查证据 | 结果 |
+|---|---|---|---|
+| R1 | 保存对话框 UTF-16LE | io.dart 含 helper×2，旧 utf8 编码路径=0 | ✅ |
+| R2/R3 | 连接池在位、旧每请求调用已除 | app_dio `_clientPool`×9；`rhttp.Rhttp.request(` 仅剩注释 1 处 | ✅ |
+| R4 | DNS 开关 `!= true` | app_dio:233 | ✅ |
+| R5 | 指数退避+重试预算4 | download.dart `_backoffBeforeRetry`×3、retry=4 | ✅ |
+| R6 | 列表刷新+单图隔离 | `refreshChapterImages/onImageGaveUp` 共4处 | ✅ |
+| R7 | 吞吐审计日志 | img/s、Task finished 输出仍在 | ✅ |
+| R8 | 全量 flutter analyze | 0 error / 0 warning | ✅ |
+
+### 4. 验证方式（待实机）
+a) 正常下载时顶栏速度实时非零；logs.txt 每 5 秒出现 `[speed] current=>0` 行；
+b) 将 Download Threads 调至 8 后重下大章节，对比 `[speed]` 峰值与实测带宽 7.8MB/s 的比值（目标 ≥75%≈5.9MB/s，受源站限流制约时如实记录）；
+c) 本节回归表 R1~R8 全部通过。
+
+### 5. 交付物
+- Windows 安装包：`venera\build\windows\Venera-1.6.3-windows-installer.exe`（12:30，16.8MB，仅 Windows 端）

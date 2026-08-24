@@ -200,6 +200,9 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
 
   final List<String> _failedSamples = [];
 
+  /// Tick counter for periodic [Log] telemetry of the speed pipeline.
+  int _speedLogTicks = 0;
+
   int _saveCountSinceLastPersist = 0;
 
   DateTime _lastPersistTime = DateTime.now();
@@ -567,6 +570,16 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
   void onNextSecond(Timer t) {
     notifyListeners();
     super.onNextSecond(t);
+    _speedLogTicks++;
+    if (_speedLogTicks % 5 == 0) {
+      var active =
+          tasks.values.where((t) => !t.isComplete && t.error == null).length;
+      Log.info(
+        "Download",
+        "[speed] current=$_currentSpeed B/s pending=$_bytesSinceLastSecond B "
+            "activeWorkers=$active",
+      );
+    }
   }
 
   void _setError(String message) {
@@ -716,6 +729,9 @@ class _ImageDownloadWrapper {
 
   var retry = 4;
 
+  /// Chunks received for the current attempt (io telemetry).
+  int _chunks = 0;
+
   /// Number of retries already used for the current image.
   int _attempts = 0;
 
@@ -742,9 +758,12 @@ class _ImageDownloadWrapper {
         if (isCancelled) {
           return;
         }
+        _chunks++;
         task.onData(p.currentBytes - lastBytes);
         lastBytes = p.currentBytes;
         if (p.imageBytes != null) {
+          Log.info("Download",
+              "[io] img#$index chunks=$_chunks bytes=${p.currentBytes}");
           var fileType = detectFileType(p.imageBytes!);
           var file = saveTo.joinFile("$index${fileType.ext}");
           await file.writeAsBytes(p.imageBytes!);

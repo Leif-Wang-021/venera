@@ -72,8 +72,12 @@ class _DownloadingPageState extends State<DownloadingPage> {
 
   Widget buildTop() {
     int speed = 0;
-    if (LocalManager().downloadingTasks.isNotEmpty) {
-      speed = LocalManager().downloadingTasks.first.speed;
+    for (var task in LocalManager().downloadingTasks) {
+      // Aggregate over every actively downloading task, not just the first,
+      // so parallel/queued scenarios all report real throughput.
+      if (!task.isPaused && !task.isError) {
+        speed += task.speed;
+      }
     }
     var first = LocalManager().downloadingTasks.firstOrNull;
     return Container(

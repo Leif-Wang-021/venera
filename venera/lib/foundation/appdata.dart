@@ -199,6 +199,7 @@ class Settings with ChangeNotifier {
     'cacheSize': 2048, // in MB
     'downloadThreads': 5,
     'imageListThreads': 3,
+    'logNetworkVerbose': false, // full request/response dumps into logs.txt
     'enableLongPressToZoom': true,
     'longPressZoomPosition': "press", // press, center
     'checkUpdateOnStart': false,
