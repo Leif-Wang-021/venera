@@ -152,3 +152,33 @@
 - 已知边界：暂停时点尚未取到列表的章节在恢复后仍会跳过（原有行为，
   本次不扩大范围）。
 - 安装包重建 15:23。
+
+---
+
+## 五、安卓端"导出漫画"报错修复（16:5x）
+
+### 现象（手机端 logs.txt 证据，经 run-as/外部存储取出）
+- 16:40:31 `ZipException: Failed to write content.`——原生多线程压缩器
+  （zip_flutter→kuba zip_entry_thread_write_files）线程池内失败；
+- 16:40:43 重试 `ZipException: Failed to open file.`——zip_open 目标 .cbz
+  返回空指针；两次均发生在 CBZ.exportVenera 的 _compress 阶段；
+- 排除磁盘满：/data 252G 可用、inode 充足；
+- 附带发现：失败路径泄漏暂存目录 cache/venera_export（843MB/2062 文件，
+  已清理）。
+
+### 根因
+zip_flutter 的 compressFolderAsync 固定走**原生 C 多线程写入器**，在部分
+安卓设备上不稳定（错误被库吞成泛化文案）；且两个导出器(CBZ/export 与
+CBZ.exportVenera)的暂存目录删除不在 finally 中，压缩失败即残留数百 MB。
+
+### 修复（lib/utils/cbz.dart，全平台生效、无源站特调）
+1. `_compress` 改用同一原生库的**单线程顺序写 API**
+   （ZipFile.open(level:4)+addFile/addDirectory+close），行为确定；
+2. 两个导出器的暂存目录清理移入 try/finally，失败也不再泄漏；
+3. 已清理设备端历史残留 843MB。
+
+### 验证与局限
+- analyze 零问题；debug APK 重建(48s 缓存命中)并覆盖安装成功、启动正常；
+- 导出动作本身为 UI 流程无法 headless 复现，最终确认待用户在手机重试
+  导出（预期：成功生成 .cbz 且无残留目录）。
+- 安装到手机的 APK：app-debug.apk（16:5x 版）。

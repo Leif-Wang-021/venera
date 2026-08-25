@@ -501,8 +501,13 @@ abstract class CBZ {
     );
     var cbz = File(outFilePath);
     if (cbz.existsSync()) cbz.deleteSync();
-    await _compress(cache.path, cbz.path);
-    cache.deleteSync(recursive: true);
+    try {
+      await _compress(cache.path, cbz.path);
+    } finally {
+      // Never leak the multi-hundred-MB staging folder when compression
+      // fails (observed 843MB residue on Android after a ZipException).
+      if (cache.existsSync()) cache.deleteSync(recursive: true);
+    }
     return cbz;
   }
 
@@ -584,8 +589,12 @@ abstract class CBZ {
 
     var cbz = File(outFilePath);
     if (cbz.existsSync()) cbz.deleteSync();
-    await _compress(cache.path, cbz.path);
-    cache.deleteSync(recursive: true);
+    try {
+      await _compress(cache.path, cbz.path);
+    } finally {
+      // Never leak the staging folder when compression fails.
+      if (cache.existsSync()) cache.deleteSync(recursive: true);
+    }
     return cbz;
   }
 
@@ -635,8 +644,31 @@ abstract class CBZ {
       .replaceAll("'", '&apos;');
   }
 
-  static _compress(String src, String dst) async {
-    await ZipFile.compressFolderAsync(src, dst, 4);
+  static Future<void> _compress(String src, String dst) async {
+    // zip_flutter 的 compressFolderAsync 走原生多线程写入器
+    // (zip_entry_thread_write_files)，在部分安卓设备上会以泛化的
+    // ZipException 失败（实测：'Failed to write content' 与重试时的
+    // 'Failed to open file'，见 2026-08-25 手机端 logs.txt）。
+    // 这里改用同一原生库的单线程顺序写入 API：行为确定、无线程池，
+    // 桌面/安卓表现一致；仅牺牲部分压缩速度。
+    var zip = ZipFile.open(dst, level: 4);
+    try {
+      await for (var entity in Directory(src).list(recursive: true)) {
+        if (entity is File) {
+          var name = entity.path
+              .replaceFirst(src, '')
+              .replaceAll('\\', '/');
+          if (name.startsWith('/')) name = name.substring(1);
+          zip.addFile(name, entity.path);
+        } else if (entity is Directory && entity.listSync().isEmpty) {
+          var name = entity.path.replaceFirst(src, '');
+          if (name.startsWith('/')) name = name.substring(1);
+          zip.addDirectory(name);
+        }
+      }
+    } finally {
+      zip.close();
+    }
   }
 }
 
