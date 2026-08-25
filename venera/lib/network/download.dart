@@ -11,6 +11,7 @@ import 'package:venera/foundation/comic_type.dart';
 import 'package:venera/foundation/local.dart';
 import 'package:venera/foundation/log.dart';
 import 'package:venera/foundation/res.dart';
+import 'package:venera/network/chapter_ready_gate.dart';
 import 'package:venera/network/fetch_concurrency_controller.dart';
 import 'package:venera/network/images.dart';
 import 'package:venera/utils/ext.dart';
@@ -110,32 +111,71 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
   @override
   void cancel() {
     _isRunning = false;
+    // Interrupt every in-flight image download right away.
+    for (var t in tasks.values) {
+      t.cancel();
+    }
+    // Release a pipeline that may be parked waiting for the next chapter.
+    _gate.releaseAll();
     LocalManager().removeTask(this);
+    // Fire-and-forget: UI callers expect cancel() to return immediately;
+    // deletion runs right away but tolerates transient file locks.
+    _deleteLocalFolderAfterCancel();
+  }
+
+  /// Deletes everything THIS task owns locally, immediately after a
+  /// cancellation. A task that was never registered in the local library
+  /// owns the whole folder; a task running on top of an existing local
+  /// entry only owns the chapter directories it was (re-)downloading.
+  /// Retries a few times because freshly-written files may still be held
+  /// open by antivirus/indexer handles for a moment on Windows.
+  Future<void> _deleteLocalFolderAfterCancel() async {
+    var p = path;
+    if (p == null || p.isEmpty) {
+      return;
+    }
     var local = LocalManager().find(id, comicType);
-    if (path != null) {
-      if (local == null) {
-        Future.sync(() async {
-          var tasks = this.tasks.values.toList();
-          for (var i = 0; i < tasks.length; i++) {
-            if (!tasks[i].isComplete) {
-              tasks[i].cancel();
-              await tasks[i].wait();
-            }
-          }
-          try {
-            await Directory(path!).delete(recursive: true);
-          }
-          catch(e) {
-            Log.error("Download", "Failed to delete directory: $e");
-          }
-        });
-      } else if (chapters != null) {
-        for (var c in chapters!) {
-          var dir = Directory(FilePath.join(path!, c));
-          if (dir.existsSync()) {
-            dir.deleteSync(recursive: true);
-          }
+    List<String> targets;
+    if (local == null) {
+      targets = [p];
+    } else {
+      // Only the chapters this task was (re-)downloading; other chapters
+      // of the same comic that already exist locally must survive.
+      targets = (chapters ?? const [])
+          .map((c) => FilePath.join(
+              p, LocalManager.getChapterDirectoryName(c)))
+          .toList();
+      if (targets.isEmpty) {
+        Log.info("Download",
+            "Cancelled; nothing owned by this task to delete under $p");
+        return;
+      }
+    }
+    for (var t in targets) {
+      var dir = Directory(t);
+      if (!dir.existsSync()) {
+        continue;
+      }
+      Object? lastError;
+      for (var attempt = 1; attempt <= 3; attempt++) {
+        try {
+          await dir.delete(recursive: true);
+          lastError = null;
+          break;
+        } catch (e) {
+          lastError = e;
+          // Brief yield: let in-flight writers release their handles.
+          await Future.delayed(const Duration(milliseconds: 300));
         }
+      }
+      if (lastError != null) {
+        Log.error("Download",
+            "Failed to delete directory '$t' after 3 attempts: $lastError");
+        // User-visible hint on top of the log record.
+        _message = "Cancelled (folder cleanup failed)";
+        notifyListeners();
+      } else {
+        Log.info("Download", "Cancelled; deleted $t");
       }
     }
   }
@@ -164,6 +204,8 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
     for (var i in shouldMove) {
       tasks.remove(i);
     }
+    // Release a pipeline that may be parked waiting for the next chapter.
+    _gate.releaseAll();
     stopRecorder();
     LocalManager().saveCurrentDownloadingTasks();
     notifyListeners();
@@ -220,6 +262,12 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
   DateTime _lastPersistTime = DateTime.now();
 
   var tasks = <int, _ImageDownloadWrapper>{};
+
+  // --- List-fetch ↔ download pipeline -----------------------------------
+  // Chapters become downloadable the moment their image list is ready
+  // instead of after every list in the task has been fetched. See
+  // [ChapterReadyGate] for the ordering & termination-safety contract.
+  final ChapterReadyGate _gate = ChapterReadyGate();
 
   int get _maxConcurrentTasks =>
       (appdata.settings["downloadThreads"] as num).toInt();
@@ -318,15 +366,17 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
   }
 
   void _scheduleTasks() {
-    var images = _images![_images!.keys.elementAt(_chapter)]!;
+    // Under the pipelined fetch+download flow the map's insertion order is
+    // completion order, so chapter identity MUST come from the canonical
+    // ordered list rather than from map positions.
+    var chapterKey = _gate.chapterAt(_chapter);
+    var images = _images![chapterKey]!;
     var downloading = 0;
     Directory? saveTo;
     if (comic!.chapters != null) {
       saveTo = Directory(FilePath.join(
         path!,
-        LocalManager.getChapterDirectoryName(
-          _images!.keys.elementAt(_chapter),
-        ),
+        LocalManager.getChapterDirectoryName(chapterKey),
       ));
       if (!saveTo.existsSync()) {
         saveTo.createSync(recursive: true);
@@ -346,7 +396,7 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
       }
       var task = _ImageDownloadWrapper(
         this,
-        _images!.keys.elementAt(_chapter),
+        chapterKey,
         images[i],
         saveTo ?? Directory(path!),
         i,
@@ -366,6 +416,8 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
     final selected = chapters == null
         ? allChapters
         : allChapters.where(chapters!.contains).toList();
+    // Canonical order for the download pipeline (see ChapterReadyGate).
+    _gate.configure(selected);
     final totalCpCount = selected.length;
     var cpCount = 0;
     var nextIndex = 0;
@@ -386,13 +438,16 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
         if (nextIndex >= selected.length) {
           return;
         }
-        final i = selected[nextIndex++];
+        final order = nextIndex++; // canonical position of this chapter
+        final i = selected[order];
 
         if (_images![i] != null) {
           _totalCount += _images![i]!.length;
           cpCount++;
           _message = "Fetching image list ($cpCount/$totalCpCount)...";
           notifyListeners();
+          // Already-fetched lists are downloadable immediately.
+          _gate.markReady(order);
           continue;
         }
 
@@ -466,6 +521,9 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
           cpCount++;
           _message = "Fetching image list ($cpCount/$totalCpCount)...";
           notifyListeners();
+          // Hand the fresh chapter to the download pipeline right away —
+          // this is what makes list-fetching and downloading parallel.
+          _gate.markReady(order);
         } finally {
           active--;
         }
@@ -473,6 +531,8 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
     }
 
     await Future.wait(List.generate(6, (_) => worker()));
+    // Whatever the outcome, no pipeline waiter may stay parked forever.
+    _gate.releaseAll();
   }
 
   @override
@@ -578,94 +638,141 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
         } else {
           _images = {'': res.data};
           _totalCount = _images!['']!.length;
+          _gate.configure(_images!.keys.toList(), allReady: true);
         }
       } else {
         _images = {};
         _totalCount = 0;
-        await _fetchImageList();
+        // PARALLEL PHASES: list fetching starts NOW and keeps running while
+        // the pipeline below downloads every chapter as soon as its list
+        // arrives. Ordering/persistence semantics are unchanged (see
+        // ChapterReadyGate); concurrency stays bounded by the existing
+        // imageListThreads / downloadThreads pools respectively.
+        _message = "Fetching image list...";
+        notifyListeners();
+        final fetching = _fetchImageList();
+        await _runDownloadPipeline();
+        await fetching; // reap the fetch phase (it exits via task flags)
         if (!_isRunning || _isError) {
           return;
         }
+        return; // pipeline already ran the finish/summary path
       }
       _message = "$_downloadedCount/$_totalCount";
       notifyListeners();
       await LocalManager().saveCurrentDownloadingTasks();
+    } else {
+      // Restored from disk: all lists already exist.
+      _gate.configure(_images!.keys.toList(), allReady: true);
     }
 
+    await _runDownloadPipeline();
+  }
+
+  /// Downloads chapters one at a time in canonical order, starting each as
+  /// soon as its image list is ready. Concurrency control is unchanged:
+  /// image-level parallelism is capped by [downloadThreads] inside
+  /// [_scheduleTasks], and the list phase by imageListThreads + the
+  /// FetchConcurrencyController, so the two phases cannot oversubscribe
+  /// beyond the user's configured limits.
+  Future<void> _runDownloadPipeline() async {
     final overallStart = DateTime.now();
     final startDownloadedCount = _downloadedCount;
-    while (_chapter < _images!.length) {
-      var images = _images![_images!.keys.elementAt(_chapter)]!;
-      var chapterStart = DateTime.now();
-      var chapterStartCount = _downloadedCount;
-      _deadLinkFailsInChapter = 0;
-      tasks.clear();
-      while (_index < images.length) {
-        _scheduleTasks();
-        var task = tasks[_index]!;
-        await task.wait();
-        if (isPaused) {
-          return;
-        }
-        if (task.error != null) {
-          // A single dead image must not kill the whole task: record it,
-          // leave its file slot empty and continue with the rest.
-          Log.error(
-            "Download",
-            "Image failed after all retries: ${images[_index]} "
-                "(${task.error})",
-          );
-          if (task.deadLink) {
-            _deadLinkFailsInChapter++;
-            // A chapter whose beginning is almost entirely dead links is
-            // very likely a stale/missing chapter (e.g. signed URLs that
-            // expired and cannot be re-signed by the source). Skip the rest
-            // instead of grinding through every remaining image for hours.
-            if (_deadLinkFailsInChapter >= _deadLinkChapterSkipThreshold) {
-              var remaining = images.length - _index - 1;
-              for (var i = _index + 1; i < images.length; i++) {
-                _failedImages++;
-                if (_failedSamples.length < 20) {
-                  _failedSamples.add(images[i]);
-                }
-              }
-              for (var t in tasks.values) {
-                t.cancel();
-              }
-              Log.error(
-                "Download",
-                "Chapter '${_images!.keys.elementAt(_chapter)}' skipped: "
-                    "$_deadLinkFailsInChapter consecutive dead images "
-                    "($remaining remaining)",
-              );
-              _index = images.length;
-              break;
-            }
-          } else {
-            _deadLinkFailsInChapter = 0;
-          }
-        }
-        _index++;
-        _downloadedCount++;
-        _message = "$_downloadedCount/$_totalCount";
-        await _persistTaskProgress();
+    for (var order = 0; order < _gate.total; order++) {
+      if (!_isRunning || _isError || isPaused) {
+        return;
       }
-      var chapterSeconds =
-          DateTime.now().difference(chapterStart).inMilliseconds / 1000;
-      var chapterImages = _downloadedCount - chapterStartCount;
-      if (chapterImages > 0 && chapterSeconds > 0) {
-        Log.info(
-          "Download",
-          "Chapter '${_images!.keys.elementAt(_chapter)}' finished: "
-              "$chapterImages images in ${chapterSeconds.toStringAsFixed(1)}s "
-              "(${(chapterImages / chapterSeconds).toStringAsFixed(2)} img/s, "
-              "threads=$_maxConcurrentTasks)",
-        );
+      await _gate.waitReady(order);
+      if (!_isRunning || _isError || isPaused) {
+        return;
       }
-      _index = 0;
-      _chapter++;
+      var ok = await _downloadChapterImages(_gate.chapterAt(order), order);
+      if (!ok) {
+        return;
+      }
     }
+    _finishTask(overallStart, startDownloadedCount);
+  }
 
+  /// Downloads one chapter's images. Returns false when the task must stop
+  /// (paused, cancelled or errored); true when the chapter is finished or
+  /// legitimately skipped.
+  Future<bool> _downloadChapterImages(String chapterKey, int order) async {
+    _chapter = order;
+    _index = 0;
+    var images = _images![chapterKey]!;
+    var chapterStart = DateTime.now();
+    var chapterStartCount = _downloadedCount;
+    _deadLinkFailsInChapter = 0;
+    tasks.clear();
+    while (_index < images.length) {
+      _scheduleTasks();
+      var task = tasks[_index]!;
+      await task.wait();
+      if (isPaused) {
+        return false;
+      }
+      if (task.error != null) {
+        // A single dead image must not kill the whole task: record it,
+        // leave its file slot empty and continue with the rest.
+        Log.error(
+          "Download",
+          "Image failed after all retries: ${images[_index]} "
+              "(${task.error})",
+        );
+        if (task.deadLink) {
+          _deadLinkFailsInChapter++;
+          // A chapter whose beginning is almost entirely dead links is
+          // very likely a stale/missing chapter (e.g. signed URLs that
+          // expired and cannot be re-signed by the source). Skip the rest
+          // instead of grinding through every remaining image for hours.
+          if (_deadLinkFailsInChapter >= _deadLinkChapterSkipThreshold) {
+            var remaining = images.length - _index - 1;
+            for (var i = _index + 1; i < images.length; i++) {
+              _failedImages++;
+              if (_failedSamples.length < 20) {
+                _failedSamples.add(images[i]);
+              }
+            }
+            for (var t in tasks.values) {
+              t.cancel();
+            }
+            Log.error(
+              "Download",
+              "Chapter '$chapterKey' skipped: "
+                  "$_deadLinkFailsInChapter consecutive dead images "
+                  "($remaining remaining)",
+            );
+            _index = images.length;
+            break;
+          }
+        } else {
+          _deadLinkFailsInChapter = 0;
+        }
+      }
+      _index++;
+      _downloadedCount++;
+      _message = "$_downloadedCount/$_totalCount";
+      await _persistTaskProgress();
+    }
+    var chapterSeconds =
+        DateTime.now().difference(chapterStart).inMilliseconds / 1000;
+    var chapterImages = _downloadedCount - chapterStartCount;
+    if (chapterImages > 0 && chapterSeconds > 0) {
+      Log.info(
+        "Download",
+        "Chapter '$chapterKey' finished: "
+            "$chapterImages images in ${chapterSeconds.toStringAsFixed(1)}s "
+            "(${(chapterImages / chapterSeconds).toStringAsFixed(2)} img/s, "
+            "threads=$_maxConcurrentTasks)",
+      );
+    }
+    return true;
+  }
+
+  /// Shared tail for a fully-completed pipeline: summary telemetry, task
+  /// completion bookkeeping and recorder shutdown.
+  void _finishTask(DateTime overallStart, int startDownloadedCount) {
     var totalSeconds =
         DateTime.now().difference(overallStart).inMilliseconds / 1000;
     var totalImages = _downloadedCount - startDownloadedCount;
@@ -708,6 +815,8 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
     _isRunning = false;
     _isError = true;
     _message = message;
+    // Release a pipeline that may be parked waiting for the next chapter.
+    _gate.releaseAll();
     notifyListeners();
     stopRecorder();
   }

@@ -110,3 +110,45 @@
 - 已知边界（沿用原算法诚实声明）：并发会改变令牌桶亏空动力学、
   θ 随时间漂移时 pest 为单点估计——预算冻结机制天然抑制了漂移期的反复越界。
 - 安装包重建 14:01。
+
+---
+
+## 四、下载器两项功能调整：取消即删本地文件夹 + 列表/下载并行（15:2x）
+
+### 1. 取消任务时删除本地文件夹
+- 原实现的缺陷：① 仅覆盖部分分支（已入库任务且未选章节时不删任何内容）；
+  ② 按章节清理时用原始章节名拼接目录，未走 `getChapterDirectoryName`
+  净化名——实际删除不生效；③ 同步分支失败无日志无提示。
+- 重写 `cancel()`：先取消全部在途图片包装器并唤醒管线 waiter，
+  再异步执行 `_deleteLocalFolderAfterCancel()`：
+  - 未入库任务 → 删除整个任务文件夹；已入库任务 → 仅删除本任务所选
+    章节的净化名目录（不误伤同漫画既有章节）；
+  - 3 次重试×300ms 规避 Windows 句柄占用；失败记 Log.error 并把任务消息
+    置为 "Cancelled (folder cleanup failed)" 作为用户提示。
+
+### 2. "获取图片列表"与"下载图片"并行化
+- 新增独立组件 `chapter_ready_gate.dart`（有序交接门）：
+  - 下载侧严格按规范序消费章节 → `_chapter/_index` 持久化语义、
+    单章日志与旧实现完全一致；
+  - `markReady` 先于等待也安全（就绪集合去重），`releaseAll` 保证
+    pause/cancel/error 时管线不悬挂；
+- `resume()` 三路径统一：
+  - 新任务多章节：`_fetchImageList()` 不再被 await 阻塞整体，与
+    `_runDownloadPipeline()` 并行——某章列表一到立即开始下载该章；
+  - 断点恢复/单章节：`configure(allReady:true)` 退化为顺序下载；
+- 原内联下载循环体逐字提取为 `_downloadChapterImages(chapterKey,order)`，
+  汇总尾段提取为 `_finishTask()`，两条路径共用、零逻辑重复；
+- `_scheduleTasks` 章节键改由 Gate 规范序提供（并行下 map 插入序≠完成序）；
+- 并发控制不变：列表阶段受 imageListThreads+FetchConcurrencyController
+  约束，图片阶段受 downloadThreads 约束，两阶段各自有界不会超订阅。
+
+### 3. 验证
+- 新增单测 `chapter_ready_gate_test.dart` **8 断言全过**——其中 G5
+  （先标记后等待）抓出真实挂起缺陷并在实现中修复；
+- 原 fetch_concurrency_controller 套件 58 断言保持全过；
+- `flutter analyze` 三文件零问题；
+- 运行时冒烟（hot_manga 3 章 headless）：管线按规范序完成三章并输出
+  `Task finished: 57 images in 88.8s`，exit=0；
+- 已知边界：暂停时点尚未取到列表的章节在恢复后仍会跳过（原有行为，
+  本次不扩大范围）。
+- 安装包重建 15:23。
