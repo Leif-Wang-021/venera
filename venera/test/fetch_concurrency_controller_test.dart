@@ -87,33 +87,48 @@ void main() {
   expect(cdSettle >= 29 && cdSettle <= 31,
       'T13d disabled-probe cooldown capped at base 30s (${cdSettle}s)');
 
-  // --- T14: after the single allowed failure, expiry SETTLES ----------
+  // --- T14: settled mode — periodic throttles PAUSE but never shed -----
   adv(31); // base 30s cooldown (capped, not doubled)
-  feedFast(c, 12); // triggers evaluation past cooldown
+  feedFast(c, 12); // triggers evaluation past cooldown -> SETTLED at 5
   expect(
       c.state == FetchCcState.normal &&
           c.currentThreads == 5 &&
           c.safeThreads == 5,
       'T14a settled at verified-safe 5, state NORMAL');
-  adv(100); // long healthy period
+  adv(100); // long healthy stretch
   feedFast(c, 20);
+  // Periodic server-side throttle after plenty of healthy successes:
+  c.record(latencyMs: 40000, success: true, throttled: true);
   expect(
-      c.state == FetchCcState.normal &&
+      c.state == FetchCcState.backoff &&
           c.currentThreads == 5 &&
           c.safeThreads == 5,
-      'T14b no more probing: stays parked at 5 (no oscillation)');
-  // Even an explicit throttle while NORMAL only sheds one step, then recovers
-  // to the SAME safe level — never re-escalates into the old loop:
-  c.record(latencyMs: 40000, success: true, throttled: true);
-  expect(c.state == FetchCcState.backoff && c.currentThreads == 4,
-      'T14c real throttle in settled mode -> 5->4 BACKOFF');
-  final cd3 = c.cooldownUntil.difference(_now).inSeconds;
-  expect(cd3 >= 29 && cd3 <= 31,
-      'T14c2 settled-regime throttle uses base 30s cooldown (${cd3}s)');
+      'T14b periodic throttle is pause-only: threads kept at 5');
+  final cdS = c.cooldownUntil.difference(_now).inSeconds;
+  expect(cdS >= 29 && cdS <= 31,
+      'T14c settled-regime throttle uses base 30s cooldown (${cdS}s)');
   adv(31);
   feedFast(c, 12);
-  expect(c.state == FetchCcState.normal && c.currentThreads == 4,
-      'T14d settled again at new safe=4');
+  expect(c.state == FetchCcState.normal && c.currentThreads == 5,
+      'T14d resumed at the SAME level (no oscillation, no loss)');
+
+  // --- T15: immediate re-throttle right after resume DOES shed ---------
+  c = make(5);
+  adv(31);
+  feedFast(c, 12); // -> PROBING 6
+  c.record(latencyMs: 40000, success: true, throttled: true); // fail #1
+  adv(31);
+  c.record(latencyMs: 700, success: true, throttled: false); // -> SETTLED 5
+  expect(c.state == FetchCcState.normal && c.currentThreads == 5,
+      'T15a settled at 5');
+  c.record(latencyMs: 40000, success: true, throttled: true);
+  expect(
+      c.state == FetchCcState.backoff &&
+          c.currentThreads == 4 &&
+          c.safeThreads == 4,
+      'T15b zero-healthy re-throttle sheds one worker (level too hot)');
+  final cdHot = c.cooldownUntil.difference(_now).inSeconds;
+  expect(cdHot >= 29 && cdHot <= 31, 'T15c shed path uses base cooldown');
 
   // --- T6: success path on a fresh controller; ceiling respected ------
   c = make(5);

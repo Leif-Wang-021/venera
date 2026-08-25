@@ -123,6 +123,12 @@ class FetchConcurrencyController {
   int consecutiveProbeFailures = 0;
   bool probeDisabled = false;
 
+  /// Healthy successes since the last state transition. A throttle landing
+  /// while this is still 0 means the current level is genuinely too hot
+  /// (shed a worker); a throttle after many successes is the periodic burst
+  /// quota of a long penalty window (pause only, keep workers).
+  int _healthySinceResume = 0;
+
   /// Bumped on every state transition. Requests dispatched under an older
   /// epoch are stale and excluded from all control decisions.
   int _epoch = 0;
@@ -156,6 +162,9 @@ class FetchConcurrencyController {
       concurrencyAtStart: currentThreads,
       epochAtStart: epochAtStart,
     ));
+    if (success && !throttled) {
+      _healthySinceResume++;
+    }
     while (_window.length > windowSize) {
       _window.removeFirst();
     }
@@ -179,7 +188,15 @@ class FetchConcurrencyController {
           _toBackoff(now, 'rate limited during probe', fromProbe: true);
           return;
         case FetchCcState.normal:
-          _toBackoff(now, 'rate limited');
+          // Under a long server penalty window, throttles recur
+          // periodically regardless of concurrency (log 2026-08-25:
+          // identical ~10-request burst cycles at threads=1 AND threads=2).
+          // Shedding workers for such transients is pure loss — pause
+          // dispatch only. Shed one worker solely when the throttle lands
+          // right after a resume with zero healthy successes in between,
+          // which DOES indicate the level is genuinely too hot.
+          _toBackoff(now, 'rate limited',
+              shedWorker: _healthySinceResume == 0);
           return;
         case FetchCcState.backoff:
           // Cooldown already governs recovery; do not refresh it per request.
@@ -224,6 +241,7 @@ class FetchConcurrencyController {
             _stateSince = now;
             _lastAdjustAt = now;
             _epoch++; // fresh regime at the higher level
+            _healthySinceResume = 0;
             _window.clear();
             _log('probe OK -> threads=$currentThreads (safe)');
           }
@@ -239,6 +257,7 @@ class FetchConcurrencyController {
             state = FetchCcState.normal;
             _stateSince = now;
             _epoch++;
+            _healthySinceResume = 0;
             // Fresh regime: later real throttles start from base cooldown
             // again instead of inheriting the probe-loop escalation.
             failureCount = 0;
@@ -307,16 +326,18 @@ class FetchConcurrencyController {
     _stateSince = now;
     _lastAdjustAt = now;
     _epoch++; // requests dispatched from now on belong to the probe regime
+    _healthySinceResume = 0;
     _window.clear(); // baseline the probe observation window
     _log('PROBING threads=$currentThreads (safe=$safeThreads)');
   }
 
-  void _toBackoff(DateTime now, String reason, {bool fromProbe = false}) {
-    if (currentThreads > minThreads) {
+  void _toBackoff(DateTime now, String reason,
+      {bool fromProbe = false, bool shedWorker = true}) {
+    if (shedWorker && currentThreads > minThreads) {
       currentThreads--;
-    }
-    if (safeThreads > currentThreads) {
-      safeThreads = currentThreads;
+      if (safeThreads > currentThreads) {
+        safeThreads = currentThreads;
+      }
     }
     failureCount++;
     if (fromProbe) {
@@ -341,9 +362,11 @@ class FetchConcurrencyController {
     _stateSince = now;
     _lastAdjustAt = now;
     _epoch++; // in-flight stragglers from the old regime become stale
+    _healthySinceResume = 0;
     _window.clear(); // one adjustment per control cycle; drop stale evidence
     _log(
-        'BACKOFF ($reason) threads=$currentThreads safe=$safeThreads '
+        'BACKOFF ($reason${shedWorker ? "" : ", pause-only"}) '
+        'threads=$currentThreads safe=$safeThreads '
         'cooldown=${effectiveCooldown}s (failure#$failureCount'
         '${probeDisabled ? ", probing disabled" : ""})');
   }
