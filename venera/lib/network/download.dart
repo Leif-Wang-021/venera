@@ -426,6 +426,7 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
           return;
         }
         active++;
+        cc.noteStart(); // actual dispatch instant: feeds the burst-M estimate
         final stopwatch = Stopwatch()..start();
         final dispatchEpoch =
             cc.epoch; // freshness tag for this request's verdict

@@ -129,33 +129,63 @@ class FetchConcurrencyController {
   /// quota of a long penalty window (pause only, keep workers).
   int _healthySinceResume = 0;
 
-  // --- Start-rate governor ---------------------------------------------
-  // Learned minimum spacing between request STARTS. Goal: keep the flow
-  // continuous right under the source refill rate so the burst bucket is
-  // never emptied — trading the sawtooth freeze (drain + pause) for a
-  // steady drip at the same (or better) average speed.
-  // AIMD: grow x1.5 (seed 4s, cap 12s) on every backoff event; decay
-  // -250ms per 20 healthy completions, floored at 0 (healthy sources pay
-  // nothing).
-  int _startGapMs = 0;
-  int _decayStreak = 0;
+  // --- Start-rate governor: BURST / CRUISE ------------------------------
+  // Generic online rate control (no source identity involved). Observable
+  // signals only: "was this request punished" and "how expensive was the
+  // penalty". w = target TOTAL spacing between request STARTS, enforced as
+  // an absolute floor on the last ACTUAL dispatch instant, so any pacing
+  // the source script does itself counts toward w instead of stacking.
+  //
+  //   BURST : w=0 full speed; observe M = inter-start spacing (EMA).
+  //   CRUISE: seeded from M on first pressure event, then
+  //           punished      -> w += 900 (cap 8000)
+  //           healthy class -> every 3 ok: w *= 0.55 (fast way back to 0)
+  //           non-healthy   -> every 6 ok: w *= 0.8, BUT exploration
+  //                            freezes once the punishment budget
+  //                            punBudget = clamp(40000/pest,1,3) is spent
+  //                            (repeated expensive drains buy nothing).
+  int _wMs = 0;
+  int _okStreak = 0;
   DateTime _nextStartAt = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime? _lastStartAt;
+  double _mObsEma = 0; // observed inter-start spacing (burst_M proxy)
+  bool _mObsValid = false;
+  double _emaHealthyMs = 1200; // typical unpunished completion latency
+  int _pestMs = 0;
+  bool? _healthyCls; // null until first pressure classification
+  int punCount = 0;
+  int punBudget = 0; // 0 = not set (healthy class ignores it anyway)
 
-  int get startGapMs => _startGapMs;
+  int get startGapMs => _wMs;
+
+  /// Last estimated penalty cost (ms above typical healthy latency).
+  int get pestEstimateMs => _pestMs;
+
+  /// Worker reports an actual dispatch instant (called right before the
+  /// network call). Feeds the burst-spacing estimate used to seed w.
+  void noteStart() {
+    final now = _clock();
+    if (_lastStartAt != null) {
+      final d = now.difference(_lastStartAt!).inMilliseconds;
+      if (d >= 200 && d <= 60000) {
+        _mObsEma = _mObsValid ? (_mObsEma * 0.7 + d * 0.3) : d.toDouble();
+        _mObsValid = true;
+      }
+    }
+    _lastStartAt = now;
+  }
 
   /// Book the next dispatch instant. Returns milliseconds the caller should
   /// wait before sending. Always 0 while no pacing is in force.
   int bookStartSlot() {
     final now = _clock();
-    final base = now.isAfter(_nextStartAt) ? now : _nextStartAt;
-    _nextStartAt = base.add(Duration(milliseconds: _startGapMs));
+    var base = now.isAfter(_nextStartAt) ? now : _nextStartAt;
+    if (_wMs > 0 && _lastStartAt != null) {
+      final floor = _lastStartAt!.add(Duration(milliseconds: _wMs));
+      if (floor.isAfter(base)) base = floor;
+    }
+    _nextStartAt = base.add(Duration(milliseconds: _wMs));
     return base.difference(now).inMilliseconds;
-  }
-
-  void _growStartGap() {
-    _startGapMs =
-        _startGapMs == 0 ? 4000 : (_startGapMs * 3 ~/ 2);
-    if (_startGapMs > 12000) _startGapMs = 12000;
   }
 
   /// Bumped on every state transition. Requests dispatched under an older
@@ -193,10 +223,18 @@ class FetchConcurrencyController {
     ));
     if (success && !throttled) {
       _healthySinceResume++;
-      if (++_decayStreak >= 20) {
-        _decayStreak = 0;
-        if (_startGapMs > 0) {
-          _startGapMs = _startGapMs <= 250 ? 0 : _startGapMs - 250;
+      _emaHealthyMs = _emaHealthyMs * 0.7 + latencyMs * 0.3;
+      _okStreak++;
+      // Cruise decay toward 0. Exploration (decaying w) freezes once the
+      // punishment budget of a non-healthy source is spent.
+      final budgetSpent =
+          _healthyCls == false && punBudget > 0 && punCount > punBudget;
+      if (!budgetSpent && _wMs > 0) {
+        final need = _healthyCls == false ? 6 : 3;
+        if (_okStreak >= need) {
+          _wMs = _healthyCls == false ? (_wMs * 8 ~/ 10) : (_wMs * 55 ~/ 100);
+          if (_wMs < 40) _wMs = 0; // negligible: snap back to full speed
+          _okStreak = 0;
         }
       }
     }
@@ -220,7 +258,8 @@ class FetchConcurrencyController {
         !_isStale(last)) {
       switch (state) {
         case FetchCcState.probing:
-          _toBackoff(now, 'rate limited during probe', fromProbe: true);
+          _toBackoff(now, 'rate limited during probe',
+              fromProbe: true, latencyMs: last.latencyMs);
           return;
         case FetchCcState.normal:
           // Under a long server penalty window, throttles recur
@@ -231,7 +270,8 @@ class FetchConcurrencyController {
           // right after a resume with zero healthy successes in between,
           // which DOES indicate the level is genuinely too hot.
           _toBackoff(now, 'rate limited',
-              shedWorker: _healthySinceResume == 0);
+              shedWorker: _healthySinceResume == 0,
+              latencyMs: last.latencyMs);
           return;
         case FetchCcState.backoff:
           // Cooldown already governs recovery; do not refresh it per request.
@@ -367,7 +407,7 @@ class FetchConcurrencyController {
   }
 
   void _toBackoff(DateTime now, String reason,
-      {bool fromProbe = false, bool shedWorker = true}) {
+      {bool fromProbe = false, bool shedWorker = true, int? latencyMs}) {
     if (shedWorker && currentThreads > minThreads) {
       currentThreads--;
       if (safeThreads > currentThreads) {
@@ -392,10 +432,11 @@ class FetchConcurrencyController {
             ? baseCooldown.inSeconds
             : cooldownSec)
         : cooldownSec;
-    // With the start-rate governor engaged, spacing is handled continuously;
-    // long blind pauses are redundant. Keep only a short transition breather
-    // (the throttled request already drained its penalty inside the JS).
-    if (probeDisabled && _startGapMs > 0 && effectiveCooldown > 10) {
+    // With the start-rate governor ALREADY engaged, spacing is handled
+    // continuously; long blind pauses are redundant. Keep only a short
+    // transition breather (the throttled request already drained its
+    // penalty inside the source script).
+    if (probeDisabled && _wMs > 0 && effectiveCooldown > 10) {
       effectiveCooldown = 10;
     }
     cooldownUntil = now.add(Duration(seconds: effectiveCooldown));
@@ -404,15 +445,37 @@ class FetchConcurrencyController {
     _lastAdjustAt = now;
     _epoch++; // in-flight stragglers from the old regime become stale
     _healthySinceResume = 0;
-    _decayStreak = 0;
-    _growStartGap(); // pressure observed: widen the learned start spacing
     _nextStartAt = now; // re-anchor the slot pointer to this transition
+    // Pressure adaptation AFTER the cooldown decision above, so the very
+    // first contact keeps the full base pause and only later events enjoy
+    // the governor's short breather.
+    punCount++;
+    if (latencyMs != null) {
+      _pestMs = latencyMs - _emaHealthyMs.toInt();
+      if (_pestMs < 500) _pestMs = 500;
+      _healthyCls = _pestMs < 8000;
+      if (_healthyCls == false && punBudget == 0) {
+        punBudget = (40000 / _pestMs).floor().clamp(1, 3);
+      }
+    }
+    if (_wMs == 0) {
+      // Seed: non-healthy sources start near their observed sustainable
+      // edge (burst spacing + bias); healthy ones barely back off.
+      _wMs = _healthyCls == false
+          ? (((_mObsValid ? _mObsEma : 3000) + 500).round().clamp(1500, 7000))
+          : 600;
+    } else {
+      _wMs += 900; // additive climb per further pressure event
+      if (_wMs > 8000) _wMs = 8000;
+    }
+    _okStreak = 0;
     _window.clear(); // one adjustment per control cycle; drop stale evidence
     _log(
         'BACKOFF ($reason${shedWorker ? "" : ", pause-only"}) '
         'threads=$currentThreads safe=$safeThreads '
         'cooldown=${effectiveCooldown}s'
-        '${_startGapMs > 0 ? " gap=${_startGapMs}ms" : ""} '
+        '${_wMs > 0 ? " w=${_wMs}ms" : ""}'
+        '${_healthyCls != null ? (_healthyCls! ? " class=healthy" : " class=non-healthy pest=${_pestMs}ms") : ""} '
         '(failure#$failureCount'
         '${probeDisabled ? ", probing disabled" : ""})');
   }

@@ -131,60 +131,82 @@ void main() {
   expect(cdHot >= 9 && cdHot <= 11,
       'T15c shed path also uses governor cooldown (${cdHot}s)');
 
-  // --- T16: start-rate governor seeds on first backoff ------------------
+  // --- T16: BURST observation + pest-seeded w0 (non-healthy) ------------
   c = make(5);
-  expect(c.startGapMs == 0, 'T16a healthy start: gap 0');
+  expect(c.startGapMs == 0, 'T16a burst start: w 0');
   expect(c.bookStartSlot() == 0 && c.bookStartSlot() == 0,
-      'T16b gap0 books cost nothing');
-  adv(31);
+      'T16b w0 books cost nothing');
+  // Simulate an observed burst: starts every ~2s.
+  c.noteStart();
+  adv(2);
+  c.noteStart();
+  adv(2);
+  c.noteStart();
+  adv(27);
   feedFast(c, 12); // -> PROBING 6
-  c.record(latencyMs: 40000, success: true, throttled: true); // fail #1
-  expect(c.startGapMs == 4000, 'T16c first backoff seeds gap=4s');
+  c.record(latencyMs: 40000, success: true, throttled: true); // contact
+  // pest = 40000 - ema(~1000) >> 8000 -> non-healthy; w0 = clip(2000+500)
+  expect(
+      c.startGapMs == 2500 && c.punCount == 1 && c.punBudget >= 1,
+      'T16c seeded from observed burst M: w=${c.startGapMs} '
+      '(budget ${c.punBudget})');
   final b1 = c.bookStartSlot();
   final b2 = c.bookStartSlot();
-  expect(b2 - b1 >= 3900, 'T16d slots spaced by learned gap ($b1/$b2)');
+  expect(b2 - b1 >= 2400, 'T16d slots spaced by w ($b1/$b2)');
 
-  // --- T17: AIMD growth x1.5, capped at 12s -----------------------------
-  // Cycle per step: expire cooldown -> settle -> 20 healthy (one -250ms
-  // decay) -> periodic throttle (x3/2 growth).
-  int prev = c.startGapMs; // 4000
+  // --- T17: additive climb +900 per pressure event, capped at 8000 ------
   for (var step = 0; step < 8; step++) {
     adv(31);
-    c.record(latencyMs: 700, success: true, throttled: false); // settle (keeps gap)
-    feedFast(c, 20);
+    c.record(latencyMs: 700, success: true, throttled: false); // settle
+    feedFast(c, 5); // keep okStreak below the decay threshold
+    final before = c.startGapMs;
     c.record(latencyMs: 40000, success: true, throttled: true);
-    final grown = (prev - 250) * 3 ~/ 2 > 12000
-        ? 12000
-        : (prev - 250) * 3 ~/ 2;
-    // Exact model: feedFast(20) runs one -250ms decay, then the throttle
-    // multiplies the post-decay value by 1.5 (capped).
-    expect(c.startGapMs == grown,
-        'T17 step$step gap exact ($prev->${c.startGapMs}, want $grown)');
-    prev = c.startGapMs;
-    if (prev == 12000) break;
+    final want = before + 900 > 8000 ? 8000 : before + 900;
+    expect(c.startGapMs == want,
+        'T17 step$step climb $before->${c.startGapMs}');
   }
-  expect(prev == 12000, 'T17z gap eventually caps at 12000');
+  expect(c.startGapMs == 8000, 'T17z capped at 8000');
 
-  // --- T18: sustained health floors the gap back to 0 -------------------
-  for (var i = 0; i < 60; i++) {
+  // --- T18: punishment budget freezes exploration -----------------------
+  // pest here is huge -> punBudget==1; the second pressure event already
+  // spends it, so decays must stop no matter how healthy it gets.
+  final frozenW = c.startGapMs;
+  for (var i = 0; i < 30; i++) {
     adv(11);
     c.record(latencyMs: 800, success: true, throttled: false);
-    feedFast(c, 20);
+    feedFast(c, 12);
   }
-  expect(c.startGapMs == 0, 'T18 long health floors gap at 0');
+  expect(c.startGapMs == frozenW,
+      'T18 budget spent: w frozen at $frozenW (${c.startGapMs})');
 
-  // --- T19: governor active -> settled cooldown shrinks to 10s ----------
+  // --- T19: cheap-penalty source recovers to full speed -----------------
+  c = make(5);
+  adv(31);
+  feedFast(c, 12); // -> PROBING 6
+  c.record(latencyMs: 4000, success: true, throttled: true); // cheap penalty
+  expect(
+      c.startGapMs == 600 && c.pestEstimateMs < 8000,
+      'T19a healthy class: light seed w=${c.startGapMs} '
+      'pest=${c.pestEstimateMs}');
+  for (var i = 0; i < 20; i++) {
+    adv(2);
+    feedFast(c, 3); // 3-ok rounds of *0.55
+  }
+  expect(c.startGapMs == 0, 'T19b healthy class floors back to 0');
+
+  // --- T19b: governor active -> settled cooldown shrinks to 10s ---------
   c = make(5);
   adv(31);
   feedFast(c, 12);
-  c.record(latencyMs: 40000, success: true, throttled: true); // seed gap=4s
-  adv(31);
+  c.record(latencyMs: 40000, success: true, throttled: true); // seed w=3500
+  adv(11); // first-contact cooldown was full base 30s? no: w was 0 pre-call
+  adv(20);
   c.record(latencyMs: 700, success: true, throttled: false); // settle
-  feedFast(c, 20);
+  feedFast(c, 5);
   c.record(latencyMs: 40000, success: true, throttled: true); // periodic
   final cdGov = c.cooldownUntil.difference(_now).inSeconds;
   expect(cdGov >= 9 && cdGov <= 11,
-      'T19 governor engaged: cooldown 30s->10s (${cdGov}s)');
+      'T19c governor engaged: cooldown 30s->10s (${cdGov}s)');
 
   // --- T6: success path on a fresh controller; ceiling respected ------
   c = make(5);
