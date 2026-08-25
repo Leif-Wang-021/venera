@@ -221,3 +221,37 @@ UI isolate ──start()──> ZipCompression(元数据预扫描,仅名字+大�
 ### 状态
 - analyze 三文件零问题；安卓 debug APK 已重建并覆盖安装启动 OK(PID 32367)；
 - 待用户手机实际导出确认 UI 流畅（架构逻辑已桌面全路径证明）。
+
+---
+
+## 七、版本统一 1.7.0 与维护收尾（18:3x）
+
+### 版本号不一致根因
+pubspec.yaml 已升 1.7.0+170，但 `lib/foundation/app.dart` 硬编码
+`version = "1.6.3"`——关于页(V1.x)、User-Agent(venera/vx)、JS 全局
+appVersion、源站 minAppVersion 语义比较全部取自该字段，故内部显示仍旧版。
+
+### 统一方式（单一事实源 + 自动生成 + 漂移守卫）
+- 唯一可编辑源：**pubspec.yaml → version**；
+- 新增 `tool/sync_version.dart`：从 pubspec 再生成
+  `lib/foundation/app_version.dart`(kAppVersion/kAppBuildNumber) 并同步
+  windows/build_sourcekey.iss 的 MyAppVersion；
+- app.dart 改引 kAppVersion（所有消费点零改动自然跟随）；
+- 新增 test/version_consistency_test.dart **5 断言**：Dart 常量=pubspec、
+  build 号一致、ISS 一致、lib/ 下无硬编码旧版本串。以后改版本只需编辑
+  pubspec 后跑一次 sync 脚本，忘跑则测试红。
+
+### 验证
+- sync 输出 1.7.0+170；守卫测试 5/5 PASS；analyze 触及文件零问题；
+  其余两套件 ALL PASS（8 条 info 为上游弃用提示，与本次无关）；
+- lib/windows/android 文本残留扫描：仅守卫测试自身的检测字面量，
+  真实零残留；
+- aapt badging：app-release.apk versionName='1.7.0' (versionCode=1700)；
+- 实机：覆盖安装 Success→dumpsys versionName=1.7.0→冷启动 OK(PID 13318)。
+
+### 维护任务收尾状态
+- Windows 安装包 Venera-1.7.0-windows-installer.exe ✓（清理后重建验证通过）；
+- 安卓 release APK（正式签名,44MB）✓；
+- Linux/macOS 包无法在 Windows 宿主交叉构建（需对应平台），如实说明。
+- 清理项：venera/build、.dart_tool、17 个 %TEMP% 会话 out 文件；
+  保留：log/、test/、桌面缓存运行时数据、用户 ratelimit_task/policy.py。

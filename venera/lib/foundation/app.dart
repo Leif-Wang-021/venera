@@ -4,6 +4,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:venera/foundation/history.dart';
+import 'package:venera/foundation/app_version.dart';
 
 import 'appdata.dart';
 import 'favorites.dart';
@@ -13,7 +14,11 @@ export "widget_utils.dart";
 export "context.dart";
 
 class _App {
-  final version = "1.6.3";
+  /// Single version identifier for the whole app (About page, User-Agent,
+  /// JS `appVersion`, source minAppVersion checks...).
+  /// Source of truth is pubspec.yaml; this file is generated — see
+  /// app_version.dart header. Never hardcode a version here.
+  final version = kAppVersion;
 
   bool get isAndroid => Platform.isAndroid;
 
