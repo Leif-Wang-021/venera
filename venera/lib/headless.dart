@@ -1,6 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+import 'dart:math';
+import 'package:venera/foundation/app.dart';
+import 'package:venera/utils/zip_worker.dart';
+import 'package:venera/utils/io.dart';
 import 'package:flutter/widgets.dart';
 import 'package:venera/utils/data_sync.dart';
 import 'package:venera/foundation/comic_source/comic_source.dart';
@@ -268,6 +271,119 @@ Future<void> runHeadlessMode(List<String> args) async {
         });
       }
       break;
+    case 'zipbench': {
+      // Compression-worker benchmark / feasibility probe:
+      // zipbench [files=300] [sizeKB=256] [cancelAfterMs=0]
+      // Generates a synthetic tree under <cache>/zipbench_src (mixed
+      // compressible + random content), runs the ZipCompression worker
+      // isolate, prints throttled progress samples and a JSON summary.
+      // cancelAfterMs>0 additionally exercises mid-flight cancellation:
+      // expects a cancelled outcome, no .tmp residue and no output file.
+      var rest = args.sublist(commandIndex + 1);
+      var files = rest.isNotEmpty ? int.tryParse(rest[0]) ?? 300 : 300;
+      var sizeKb = rest.length > 1 ? int.tryParse(rest[1]) ?? 256 : 256;
+      var cancelAfterMs =
+          rest.length > 2 ? int.tryParse(rest[2]) ?? 0 : 0;
+
+      var cache = App.cachePath;
+      var src = FilePath.join(cache, 'zipbench_src');
+      var dst = FilePath.join(cache, 'zipbench_out.zip');
+      var srcDir = Directory(src);
+      if (srcDir.existsSync()) srcDir.deleteSync(recursive: true);
+      srcDir.createSync(recursive: true);
+      var outFile = File(dst);
+      if (outFile.existsSync()) outFile.deleteSync();
+
+      var rnd = Random(42);
+      var chunk = List<int>.generate(64 * 1024, (i) => i & 0xFF); // compressible
+      for (var i = 0; i < files; i++) {
+        var sub = Directory(
+            FilePath.join(src, 'ch${(i % 20).toString().padLeft(2, '0')}'));
+        if (!sub.existsSync()) sub.createSync();
+        var f = File(FilePath.join(
+            sub.path, 'img_${i.toString().padLeft(5, '0')}.bin'));
+        var sink = f.openWrite();
+        for (var b = 0; b < sizeKb * 1024; b += chunk.length) {
+          if (i % 3 == 0 && b % (128 * 1024) == 0) {
+            sink.add(List<int>.generate(chunk.length, (_) => rnd.nextInt(256)));
+          } else {
+            sink.add(chunk);
+          }
+        }
+        await sink.close();
+      }
+      var totalBytes = files * sizeKb * 1024;
+      hPrint('[zipbench] generated $files files '
+          '(${(totalBytes / 1048576).toStringAsFixed(1)} MB) at $src');
+
+      var sw = Stopwatch()..start();
+      var progressSamples = 0;
+      var lastReported = -1.0;
+      final handle = ZipCompression.start(
+        src: src,
+        dst: dst,
+        onProgress: (p) {
+          progressSamples++;
+          lastReported = p.ratio;
+          if (progressSamples <= 8 || progressSamples % 5 == 0) {
+            hPrint('[zipbench] progress ${(p.ratio * 100).toStringAsFixed(1)}% '
+                'files=${p.filesDone}/${p.filesTotal} '
+                '(${(p.bytesDone / 1048576).toStringAsFixed(1)}MB)');
+          }
+        },
+      );
+      Timer? cancelTimer;
+      var cancelSentAt = 0;
+      if (cancelAfterMs > 0) {
+        cancelTimer = Timer(Duration(milliseconds: cancelAfterMs), () {
+          cancelSentAt = sw.elapsedMilliseconds;
+          handle.cancel();
+          hPrint('[zipbench] cancel requested at ${cancelSentAt}ms');
+        });
+      }
+
+      var status = '';
+      String? errorText;
+      try {
+        await handle.done;
+        status = cancelAfterMs > 0 ? 'UNEXPECTED_SUCCESS' : 'success';
+      } on ZipCancelledException {
+        status = 'cancelled';
+      } catch (e) {
+        status = 'error';
+        errorText = e.toString();
+      }
+      cancelTimer?.cancel();
+      sw.stop();
+
+      var outExists = outFile.existsSync();
+      var tmpResidue = File('$dst.tmp').existsSync();
+      cliPrint({
+        'status': (status == 'error' ||
+                status == 'UNEXPECTED_SUCCESS' ||
+                tmpResidue)
+            ? 'error'
+            : 'success',
+        'message': 'zipbench complete.',
+        'data': {
+          'mode': cancelAfterMs > 0 ? 'cancel' : 'full',
+          'outcome': status,
+          'error': errorText,
+          'durationMs': sw.elapsedMilliseconds,
+          'files': files,
+          'sizeKB': sizeKb,
+          'progressSamples': progressSamples,
+          'lastRatio': lastReported,
+          'outputExists': outExists,
+          'tmpResidue': tmpResidue,
+          'cancelSentAtMs': cancelSentAt,
+        },
+      });
+      exit((status == 'error' || status == 'UNEXPECTED_SUCCESS' || tmpResidue ||
+              (cancelAfterMs > 0 && status != 'cancelled'))
+          ? 1
+          : 0);
+    }
     case 'dlbench': {
       // Real-pipeline download benchmark:
       // dlbench <sourceKey> <comicId> <chapterId> [maxImages=30] [threads=8]

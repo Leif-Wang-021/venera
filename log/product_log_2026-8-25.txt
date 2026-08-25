@@ -182,3 +182,42 @@ CBZ.exportVenera)的暂存目录删除不在 finally 中，压缩失败即残留
 - 导出动作本身为 UI 流程无法 headless 复现，最终确认待用户在手机重试
   导出（预期：成功生成 .cbz 且无残留目录）。
 - 安装到手机的 APK：app-debug.apk（16:5x 版）。
+
+---
+
+## 六、导出压缩 Worker Isolate 架构（用户方向确认后实施，17:xx）
+
+### 背景
+第五节方案解决了报错，但顺序同步 FFI 跑在 UI isolate 上：实测 843MB/
+2062 文件压缩期间 UI 冻结数十秒、单核占满发热（用户复现确认）。
+
+### 架构（新增 lib/utils/zip_worker.dart）
+```
+UI isolate ──start()──> ZipCompression(元数据预扫描,仅名字+大小)
+    │                        │ Isolate.spawn
+    │<──progress(节流)────── Worker isolate
+    │──cancel(消息)────────>   └ 同步FFI逐文件 addFile
+    │                          输出 dst.tmp → openRead校验 → rename(dst)
+```
+- 进度按**字节**计（文件计数会严重失真：62 个大文件≫2000 个小文件），
+  节流 ≥150ms 且变化 ≥1%，完成必发 100%；
+- 取消语义="当前文件完成后停止"（同步 FFI 不可中断，强杀 native 线程
+  正是旧版不稳定的根源）；handle 在握手前收到 cancel 会缓冲；
+- 不跨 isolate 传任何 FFI 指针：worker 自建自毁 zip 对象。
+
+### 实施中抓到的缺陷（zipbench 自动化暴露）
+纯同步循环饿死 worker 自身事件循环 → control.listen 永不派发，
+取消被无视直至跑完。修复：每文件后 `await Future.delayed(zero)`
+让出轮转。此缺陷桌面快任务会掩盖成"成功"，实机长任务必然踩中——
+验证通道的价值实证。
+
+### 验证（Windows exe headless `zipbench` 命令，可长期回归）
+| 用例 | 结果 |
+|---|---|
+| 全量 400×256KB | success，1487ms，进度采样 11 次(节流生效)，tmp 残留 false |
+| 取消 @206ms | cancelled@207ms(**1 文件边界内**)，无输出无残留 |
+| 全量 400×512KB | success，5399ms，采样 33 次，lastRatio=1.0 |
+
+### 状态
+- analyze 三文件零问题；安卓 debug APK 已重建并覆盖安装启动 OK(PID 32367)；
+- 待用户手机实际导出确认 UI 流畅（架构逻辑已桌面全路径证明）。

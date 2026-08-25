@@ -7,6 +7,7 @@ import 'package:venera/foundation/local.dart';
 import 'package:venera/utils/ext.dart';
 import 'package:venera/utils/file_type.dart';
 import 'package:venera/utils/io.dart';
+import 'package:venera/utils/zip_worker.dart';
 import 'package:zip_flutter/zip_flutter.dart';
 
 class ComicMetaData {
@@ -645,30 +646,14 @@ abstract class CBZ {
   }
 
   static Future<void> _compress(String src, String dst) async {
-    // zip_flutter 的 compressFolderAsync 走原生多线程写入器
-    // (zip_entry_thread_write_files)，在部分安卓设备上会以泛化的
-    // ZipException 失败（实测：'Failed to write content' 与重试时的
-    // 'Failed to open file'，见 2026-08-25 手机端 logs.txt）。
-    // 这里改用同一原生库的单线程顺序写入 API：行为确定、无线程池，
-    // 桌面/安卓表现一致；仅牺牲部分压缩速度。
-    var zip = ZipFile.open(dst, level: 4);
-    try {
-      await for (var entity in Directory(src).list(recursive: true)) {
-        if (entity is File) {
-          var name = entity.path
-              .replaceFirst(src, '')
-              .replaceAll('\\', '/');
-          if (name.startsWith('/')) name = name.substring(1);
-          zip.addFile(name, entity.path);
-        } else if (entity is Directory && entity.listSync().isEmpty) {
-          var name = entity.path.replaceFirst(src, '');
-          if (name.startsWith('/')) name = name.substring(1);
-          zip.addDirectory(name);
-        }
-      }
-    } finally {
-      zip.close();
-    }
+    // 历史教训（2026-08-25）：
+    // 1) zip_flutter 自带的 compressFolderAsync 走原生多线程写入器，
+    //    在部分安卓设备上不稳定（'Failed to write content' /
+    //    'Failed to open file'，错误码被库吞掉）；
+    // 2) 改成主 isolate 上的顺序同步 FFI 后稳定，但会冻结 UI 数十秒。
+    // 现方案：专用 Worker isolate 内单线程顺序写——稳定性与流畅度兼得，
+    // 且输出先写 .tmp、校验可读后原子改名，杜绝半成品档案。
+    await ZipCompression.run(src: src, dst: dst);
   }
 }
 
