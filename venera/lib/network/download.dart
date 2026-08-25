@@ -396,6 +396,23 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
           continue;
         }
 
+        // Start-rate governor: book this dispatch's slot BEFORE taking a
+        // permit so the learned spacing never blocks other workers, and the
+        // latency stopwatch below stays free of pacing time. With gap=0
+        // (healthy sources / pre-contact) this is a no-op.
+        final slotMs = cc.bookStartSlot();
+        if (slotMs > 0) {
+          final due = DateTime.now().add(Duration(milliseconds: slotMs));
+          while (_isRunning &&
+              !_isError &&
+              DateTime.now().isBefore(due)) {
+            await Future.delayed(const Duration(milliseconds: 50));
+          }
+          if (!_isRunning || _isError) {
+            return;
+          }
+        }
+
         // Wait for an available permit before hitting the source. While the
         // controller is in BACKOFF cooldown we dispatch NOTHING new: firing
         // more requests at lower concurrency still burns the exhausted

@@ -129,6 +129,35 @@ class FetchConcurrencyController {
   /// quota of a long penalty window (pause only, keep workers).
   int _healthySinceResume = 0;
 
+  // --- Start-rate governor ---------------------------------------------
+  // Learned minimum spacing between request STARTS. Goal: keep the flow
+  // continuous right under the source refill rate so the burst bucket is
+  // never emptied — trading the sawtooth freeze (drain + pause) for a
+  // steady drip at the same (or better) average speed.
+  // AIMD: grow x1.5 (seed 4s, cap 12s) on every backoff event; decay
+  // -250ms per 20 healthy completions, floored at 0 (healthy sources pay
+  // nothing).
+  int _startGapMs = 0;
+  int _decayStreak = 0;
+  DateTime _nextStartAt = DateTime.fromMillisecondsSinceEpoch(0);
+
+  int get startGapMs => _startGapMs;
+
+  /// Book the next dispatch instant. Returns milliseconds the caller should
+  /// wait before sending. Always 0 while no pacing is in force.
+  int bookStartSlot() {
+    final now = _clock();
+    final base = now.isAfter(_nextStartAt) ? now : _nextStartAt;
+    _nextStartAt = base.add(Duration(milliseconds: _startGapMs));
+    return base.difference(now).inMilliseconds;
+  }
+
+  void _growStartGap() {
+    _startGapMs =
+        _startGapMs == 0 ? 4000 : (_startGapMs * 3 ~/ 2);
+    if (_startGapMs > 12000) _startGapMs = 12000;
+  }
+
   /// Bumped on every state transition. Requests dispatched under an older
   /// epoch are stale and excluded from all control decisions.
   int _epoch = 0;
@@ -164,6 +193,12 @@ class FetchConcurrencyController {
     ));
     if (success && !throttled) {
       _healthySinceResume++;
+      if (++_decayStreak >= 20) {
+        _decayStreak = 0;
+        if (_startGapMs > 0) {
+          _startGapMs = _startGapMs <= 250 ? 0 : _startGapMs - 250;
+        }
+      }
     }
     while (_window.length > windowSize) {
       _window.removeFirst();
@@ -352,22 +387,33 @@ class FetchConcurrencyController {
     // Once probing is disabled, escalation loses its purpose: the doubled
     // cooldown existed to space out PROBE retries. Resume at the settled
     // level after the plain base pause instead (log section 九).
-    final effectiveCooldown = probeDisabled
+    var effectiveCooldown = probeDisabled
         ? (cooldownSec > baseCooldown.inSeconds
             ? baseCooldown.inSeconds
             : cooldownSec)
         : cooldownSec;
+    // With the start-rate governor engaged, spacing is handled continuously;
+    // long blind pauses are redundant. Keep only a short transition breather
+    // (the throttled request already drained its penalty inside the JS).
+    if (probeDisabled && _startGapMs > 0 && effectiveCooldown > 10) {
+      effectiveCooldown = 10;
+    }
     cooldownUntil = now.add(Duration(seconds: effectiveCooldown));
     state = FetchCcState.backoff;
     _stateSince = now;
     _lastAdjustAt = now;
     _epoch++; // in-flight stragglers from the old regime become stale
     _healthySinceResume = 0;
+    _decayStreak = 0;
+    _growStartGap(); // pressure observed: widen the learned start spacing
+    _nextStartAt = now; // re-anchor the slot pointer to this transition
     _window.clear(); // one adjustment per control cycle; drop stale evidence
     _log(
         'BACKOFF ($reason${shedWorker ? "" : ", pause-only"}) '
         'threads=$currentThreads safe=$safeThreads '
-        'cooldown=${effectiveCooldown}s (failure#$failureCount'
+        'cooldown=${effectiveCooldown}s'
+        '${_startGapMs > 0 ? " gap=${_startGapMs}ms" : ""} '
+        '(failure#$failureCount'
         '${probeDisabled ? ", probing disabled" : ""})');
   }
 

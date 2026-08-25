@@ -105,8 +105,8 @@ void main() {
           c.safeThreads == 5,
       'T14b periodic throttle is pause-only: threads kept at 5');
   final cdS = c.cooldownUntil.difference(_now).inSeconds;
-  expect(cdS >= 29 && cdS <= 31,
-      'T14c settled-regime throttle uses base 30s cooldown (${cdS}s)');
+  expect(cdS >= 9 && cdS <= 11,
+      'T14c governor engaged: cooldown shrinks to 10s (${cdS}s)');
   adv(31);
   feedFast(c, 12);
   expect(c.state == FetchCcState.normal && c.currentThreads == 5,
@@ -128,7 +128,63 @@ void main() {
           c.safeThreads == 4,
       'T15b zero-healthy re-throttle sheds one worker (level too hot)');
   final cdHot = c.cooldownUntil.difference(_now).inSeconds;
-  expect(cdHot >= 29 && cdHot <= 31, 'T15c shed path uses base cooldown');
+  expect(cdHot >= 9 && cdHot <= 11,
+      'T15c shed path also uses governor cooldown (${cdHot}s)');
+
+  // --- T16: start-rate governor seeds on first backoff ------------------
+  c = make(5);
+  expect(c.startGapMs == 0, 'T16a healthy start: gap 0');
+  expect(c.bookStartSlot() == 0 && c.bookStartSlot() == 0,
+      'T16b gap0 books cost nothing');
+  adv(31);
+  feedFast(c, 12); // -> PROBING 6
+  c.record(latencyMs: 40000, success: true, throttled: true); // fail #1
+  expect(c.startGapMs == 4000, 'T16c first backoff seeds gap=4s');
+  final b1 = c.bookStartSlot();
+  final b2 = c.bookStartSlot();
+  expect(b2 - b1 >= 3900, 'T16d slots spaced by learned gap ($b1/$b2)');
+
+  // --- T17: AIMD growth x1.5, capped at 12s -----------------------------
+  // Cycle per step: expire cooldown -> settle -> 20 healthy (one -250ms
+  // decay) -> periodic throttle (x3/2 growth).
+  int prev = c.startGapMs; // 4000
+  for (var step = 0; step < 8; step++) {
+    adv(31);
+    c.record(latencyMs: 700, success: true, throttled: false); // settle (keeps gap)
+    feedFast(c, 20);
+    c.record(latencyMs: 40000, success: true, throttled: true);
+    final grown = (prev - 250) * 3 ~/ 2 > 12000
+        ? 12000
+        : (prev - 250) * 3 ~/ 2;
+    // Exact model: feedFast(20) runs one -250ms decay, then the throttle
+    // multiplies the post-decay value by 1.5 (capped).
+    expect(c.startGapMs == grown,
+        'T17 step$step gap exact ($prev->${c.startGapMs}, want $grown)');
+    prev = c.startGapMs;
+    if (prev == 12000) break;
+  }
+  expect(prev == 12000, 'T17z gap eventually caps at 12000');
+
+  // --- T18: sustained health floors the gap back to 0 -------------------
+  for (var i = 0; i < 60; i++) {
+    adv(11);
+    c.record(latencyMs: 800, success: true, throttled: false);
+    feedFast(c, 20);
+  }
+  expect(c.startGapMs == 0, 'T18 long health floors gap at 0');
+
+  // --- T19: governor active -> settled cooldown shrinks to 10s ----------
+  c = make(5);
+  adv(31);
+  feedFast(c, 12);
+  c.record(latencyMs: 40000, success: true, throttled: true); // seed gap=4s
+  adv(31);
+  c.record(latencyMs: 700, success: true, throttled: false); // settle
+  feedFast(c, 20);
+  c.record(latencyMs: 40000, success: true, throttled: true); // periodic
+  final cdGov = c.cooldownUntil.difference(_now).inSeconds;
+  expect(cdGov >= 9 && cdGov <= 11,
+      'T19 governor engaged: cooldown 30s->10s (${cdGov}s)');
 
   // --- T6: success path on a fresh controller; ceiling respected ------
   c = make(5);
