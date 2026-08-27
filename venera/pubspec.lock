@@ -4,35 +4,10 @@ packages:
   app_links:
     dependency: "direct main"
     description:
-      name: app_links
-      sha256: "3462d9defc61565fde4944858b59bec5be2b9d5b05f20aed190adb3ad08a7abc"
-      url: "https://pub.dev"
-    source: hosted
-    version: "7.0.0"
-  app_links_linux:
-    dependency: transitive
-    description:
-      name: app_links_linux
-      sha256: f5f7173a78609f3dfd4c2ff2c95bd559ab43c80a87dc6a095921d96c05688c81
-      url: "https://pub.dev"
-    source: hosted
-    version: "1.0.3"
-  app_links_platform_interface:
-    dependency: transitive
-    description:
-      name: app_links_platform_interface
-      sha256: "05f5379577c513b534a29ddea68176a4d4802c46180ee8e2e966257158772a3f"
-      url: "https://pub.dev"
-    source: hosted
-    version: "2.0.2"
-  app_links_web:
-    dependency: transitive
-    description:
-      name: app_links_web
-      sha256: af060ed76183f9e2b87510a9480e56a5352b6c249778d07bd2c95fc35632a555
-      url: "https://pub.dev"
-    source: hosted
-    version: "1.0.4"
+      path: "ohos_plugins/app_links"
+      relative: true
+    source: path
+    version: "6.4.1"
   archive:
     dependency: "direct dev"
     description:
@@ -93,10 +68,10 @@ packages:
     dependency: transitive
     description:
       name: characters
-      sha256: faf38497bda5ead2a8c7615f4f7939df04333478bf32e4173fcb06d428b5716b
+      sha256: f71061c654a3380576a52b451dd5532377954cf9dbd272a78fc8479606670803
       url: "https://pub.dev"
     source: hosted
-    version: "1.4.1"
+    version: "1.4.0"
   clock:
     dependency: transitive
     description:
@@ -181,10 +156,9 @@ packages:
   display_mode:
     dependency: "direct main"
     description:
-      name: display_mode
-      sha256: "8a381f3602a09dc4e96140a0df30808631468d6d0dfff7722f67b1f83757a7cc"
-      url: "https://pub.dev"
-    source: hosted
+      path: "ohos_plugins/display_mode"
+      relative: true
+    source: path
     version: "0.0.2"
   dynamic_color:
     dependency: "direct main"
@@ -229,11 +203,12 @@ packages:
   file_selector:
     dependency: "direct main"
     description:
-      name: file_selector
-      sha256: bd15e43e9268db636b53eeaca9f56324d1622af30e5c34d6e267649758c84d9a
-      url: "https://pub.dev"
-    source: hosted
-    version: "1.1.0"
+      path: "packages/file_selector/file_selector"
+      ref: HEAD
+      resolved-ref: "35fb467533e174411a117b2a030c15d2a3a9687c"
+      url: "https://gitee.com/openharmony-sig/flutter_packages.git"
+    source: git
+    version: "1.0.0"
   file_selector_android:
     dependency: transitive
     description:
@@ -266,6 +241,15 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.9.5"
+  file_selector_ohos:
+    dependency: transitive
+    description:
+      path: "packages/file_selector/file_selector_ohos"
+      ref: HEAD
+      resolved-ref: "35fb467533e174411a117b2a030c15d2a3a9687c"
+      url: "https://gitee.com/openharmony-sig/flutter_packages.git"
+    source: git
+    version: "0.5.0+2"
   file_selector_platform_interface:
     dependency: transitive
     description:
@@ -302,10 +286,10 @@ packages:
     dependency: "direct main"
     description:
       name: flex_seed_scheme
-      sha256: a3183753bbcfc3af106224bff3ab3e1844b73f58062136b7499919f49f3667e7
+      sha256: "828291a5a4d4283590541519d8b57821946660ac61d2e07d955f81cfcab22e5d"
       url: "https://pub.dev"
     source: hosted
-    version: "4.0.1"
+    version: "3.6.1"
   flutter:
     dependency: "direct main"
     description: flutter
@@ -314,91 +298,75 @@ packages:
   flutter_7zip:
     dependency: "direct main"
     description:
-      path: "."
-      ref: b33344797f1d2469339e0e1b75f5f954f1da224c
-      resolved-ref: b33344797f1d2469339e0e1b75f5f954f1da224c
-      url: "https://github.com/venera-app/flutter_7zip"
-    source: git
+      path: "ohos_plugins/flutter_7zip"
+      relative: true
+    source: path
     version: "0.0.1"
   flutter_file_dialog:
     dependency: "direct main"
     description:
-      name: flutter_file_dialog
-      sha256: ec904d15e7da3691bb60442a762b0a09afa37ded7265b9fc2088ec202b7d844f
-      url: "https://pub.dev"
-    source: hosted
+      path: "ohos_plugins/flutter_file_dialog"
+      relative: true
+    source: path
     version: "3.0.3"
   flutter_inappwebview:
     dependency: "direct main"
     description:
-      path: flutter_inappwebview
-      ref: "3ef899b3db57c911b080979f1392253b835f98ab"
-      resolved-ref: "3ef899b3db57c911b080979f1392253b835f98ab"
-      url: "https://github.com/venera-app/flutter_inappwebview"
-    source: git
-    version: "6.2.0-beta.3"
+      path: "ohos_plugins/flutter_inappwebview/flutter_inappwebview"
+      relative: true
+    source: path
+    version: "6.0.0"
   flutter_inappwebview_android:
     dependency: transitive
     description:
-      path: flutter_inappwebview_android
-      ref: "3ef899b3db57c911b080979f1392253b835f98ab"
-      resolved-ref: "3ef899b3db57c911b080979f1392253b835f98ab"
-      url: "https://github.com/venera-app/flutter_inappwebview"
-    source: git
-    version: "1.2.0-beta.3"
+      path: "ohos_plugins/flutter_inappwebview/flutter_inappwebview_android"
+      relative: true
+    source: path
+    version: "1.0.12"
   flutter_inappwebview_internal_annotations:
     dependency: transitive
     description:
-      name: flutter_inappwebview_internal_annotations
-      sha256: "787171d43f8af67864740b6f04166c13190aa74a1468a1f1f1e9ee5b90c359cd"
-      url: "https://pub.dev"
-    source: hosted
-    version: "1.2.0"
+      path: "dev_packages/flutter_inappwebview_internal_annotations"
+      ref: HEAD
+      resolved-ref: bfc8e52cc9ba6e4f361bad95f7a6ee92a56ec6f6
+      url: "https://gitee.com/openharmony-sig/flutter_inappwebview.git"
+    source: git
+    version: "1.1.1"
   flutter_inappwebview_ios:
     dependency: transitive
     description:
-      path: flutter_inappwebview_ios
-      ref: "3ef899b3db57c911b080979f1392253b835f98ab"
-      resolved-ref: "3ef899b3db57c911b080979f1392253b835f98ab"
-      url: "https://github.com/venera-app/flutter_inappwebview"
-    source: git
-    version: "1.2.0-beta.3"
+      path: "ohos_plugins/flutter_inappwebview/flutter_inappwebview_ios"
+      relative: true
+    source: path
+    version: "1.0.13"
   flutter_inappwebview_macos:
     dependency: transitive
     description:
-      path: flutter_inappwebview_macos
-      ref: "3ef899b3db57c911b080979f1392253b835f98ab"
-      resolved-ref: "3ef899b3db57c911b080979f1392253b835f98ab"
-      url: "https://github.com/venera-app/flutter_inappwebview"
-    source: git
-    version: "1.2.0-beta.3"
+      path: "ohos_plugins/flutter_inappwebview/flutter_inappwebview_macos"
+      relative: true
+    source: path
+    version: "1.0.11"
+  flutter_inappwebview_ohos:
+    dependency: transitive
+    description:
+      path: "ohos_plugins/flutter_inappwebview/flutter_inappwebview_ohos"
+      relative: true
+    source: path
+    version: "0.0.1"
   flutter_inappwebview_platform_interface:
     dependency: transitive
     description:
-      path: flutter_inappwebview_platform_interface
-      ref: "3ef899b3db57c911b080979f1392253b835f98ab"
-      resolved-ref: "3ef899b3db57c911b080979f1392253b835f98ab"
-      url: "https://github.com/venera-app/flutter_inappwebview"
-    source: git
-    version: "1.4.0-beta.3"
+      path: "ohos_plugins/flutter_inappwebview/flutter_inappwebview_platform_interface"
+      relative: true
+    source: path
+    version: "1.0.10"
   flutter_inappwebview_web:
     dependency: transitive
     description:
-      path: flutter_inappwebview_web
-      ref: "3ef899b3db57c911b080979f1392253b835f98ab"
-      resolved-ref: "3ef899b3db57c911b080979f1392253b835f98ab"
-      url: "https://github.com/venera-app/flutter_inappwebview"
-    source: git
-    version: "1.2.0-beta.3"
-  flutter_inappwebview_windows:
-    dependency: transitive
-    description:
-      path: flutter_inappwebview_windows
-      ref: "3ef899b3db57c911b080979f1392253b835f98ab"
-      resolved-ref: "3ef899b3db57c911b080979f1392253b835f98ab"
-      url: "https://github.com/venera-app/flutter_inappwebview"
-    source: git
-    version: "0.7.0-beta.3"
+      path: "ohos_plugins/flutter_inappwebview/flutter_inappwebview_web"
+      relative: true
+    source: path
+    version: "1.0.8"
   flutter_lints:
     dependency: "direct dev"
     description:
@@ -415,10 +383,9 @@ packages:
   flutter_memory_info:
     dependency: "direct main"
     description:
-      name: flutter_memory_info
-      sha256: eacfd0dd01ff596b4e5bf022442769a1807a73f2af43d62802436f0a5de99137
-      url: "https://pub.dev"
-    source: hosted
+      path: "ohos_plugins/flutter_memory_info"
+      relative: true
+    source: path
     version: "0.0.3"
   flutter_plugin_android_lifecycle:
     dependency: transitive
@@ -431,11 +398,9 @@ packages:
   flutter_qjs:
     dependency: "direct main"
     description:
-      path: "."
-      ref: "8feae95df7fb00455df129ad7a0dfec1d0e8d8e4"
-      resolved-ref: "8feae95df7fb00455df129ad7a0dfec1d0e8d8e4"
-      url: "https://github.com/venera-app/flutter_qjs"
-    source: git
+      path: "ohos_plugins/flutter_qjs"
+      relative: true
+    source: path
     version: "0.3.7"
   flutter_reorderable_grid_view:
     dependency: "direct main"
@@ -456,11 +421,9 @@ packages:
   flutter_saf:
     dependency: "direct main"
     description:
-      path: "."
-      ref: fe182cdf40e5fa6230f451bc1d643b860f610d13
-      resolved-ref: fe182cdf40e5fa6230f451bc1d643b860f610d13
-      url: "https://github.com/venera-app/flutter_saf"
-    source: git
+      path: "ohos_plugins/flutter_saf"
+      relative: true
+    source: path
     version: "0.0.1"
   flutter_staggered_grid_view:
     dependency: "direct main"
@@ -505,14 +468,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.1.0"
-  gtk:
-    dependency: transitive
-    description:
-      name: gtk
-      sha256: e8ce9ca4b1df106e4d72dad201d345ea1a036cc12c360f1a7d5a758f78ffa42c
-      url: "https://pub.dev"
-    source: hosted
-    version: "2.1.0"
   html:
     dependency: "direct main"
     description:
@@ -561,6 +516,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.0.5"
+  js:
+    dependency: transitive
+    description:
+      name: js
+      sha256: f2c445dce49627136094980615a031419f7f3eb393237e4ecd97ac15dea343f3
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.6.7"
   json_annotation:
     dependency: transitive
     description:
@@ -604,27 +567,33 @@ packages:
   local_auth:
     dependency: "direct main"
     description:
-      name: local_auth
-      sha256: ae6f382f638108c6becd134318d7c3f0a93875383a54010f61d7c97ac05d5137
-      url: "https://pub.dev"
-    source: hosted
-    version: "3.0.1"
+      path: "ohos_plugins/local_auth/local_auth"
+      relative: true
+    source: path
+    version: "2.1.6"
   local_auth_android:
     dependency: transitive
     description:
       name: local_auth_android
-      sha256: dc9663a7bc8ac33d7d988e63901974f63d527ebef260eabd19c479447cc9c911
+      sha256: a0bdfcc0607050a26ef5b31d6b4b254581c3d3ce3c1816ab4d4f4a9173e84467
       url: "https://pub.dev"
     source: hosted
-    version: "2.0.5"
-  local_auth_darwin:
+    version: "1.0.56"
+  local_auth_ios:
     dependency: transitive
     description:
-      name: local_auth_darwin
-      sha256: a8c3d4e17454111f7fd31ff72a31222359f6059f7fe956c2dcfe0f88f49826d4
+      name: local_auth_ios
+      sha256: "6dde47dc852bc0c8343cb58e66a46efb16b62eddf389ce103d4dacb0c6c40c71"
       url: "https://pub.dev"
     source: hosted
-    version: "2.0.3"
+    version: "1.1.7"
+  local_auth_ohos:
+    dependency: transitive
+    description:
+      path: "ohos_plugins/local_auth/local_auth_ohos"
+      relative: true
+    source: path
+    version: "1.0.0"
   local_auth_platform_interface:
     dependency: transitive
     description:
@@ -637,51 +606,49 @@ packages:
     dependency: transitive
     description:
       name: local_auth_windows
-      sha256: be12c5b8ba5e64896983123655c5f67d2484ecfcc95e367952ad6e3bff94cb16
+      sha256: bc4e66a29b0fdf751aafbec923b5bed7ad6ed3614875d8151afe2578520b2ab5
       url: "https://pub.dev"
     source: hosted
-    version: "2.0.1"
+    version: "1.0.11"
   lodepng_flutter:
     dependency: "direct main"
     description:
-      path: "."
-      ref: ac7d05dde32e8d728102a9ff66e6b55f05d94ba1
-      resolved-ref: ac7d05dde32e8d728102a9ff66e6b55f05d94ba1
-      url: "https://github.com/venera-app/lodepng_flutter"
-    source: git
+      path: "ohos_plugins/lodepng_flutter"
+      relative: true
+    source: path
     version: "0.0.1"
   matcher:
     dependency: transitive
     description:
       name: matcher
-      sha256: dc0b7dc7651697ea4ff3e69ef44b0407ea32c487a39fff6a4004fa585e901861
+      sha256: dc58c723c3c24bf8d3e2d3ad3f2f9d7bd9cf43ec6feaa64181775e60190153f2
       url: "https://pub.dev"
     source: hosted
-    version: "0.12.19"
+    version: "0.12.17"
   material_color_utilities:
     dependency: transitive
     description:
       name: material_color_utilities
-      sha256: "9c337007e82b1889149c82ed242ed1cb24a66044e30979c44912381e9be4c48b"
+      sha256: f7142bb1154231d7ea5f96bc7bde4bda2a0945d2806bb11670e30b850d56bdec
       url: "https://pub.dev"
     source: hosted
-    version: "0.13.0"
+    version: "0.11.1"
   meta:
     dependency: transitive
     description:
       name: meta
-      sha256: "23f08335362185a5ea2ad3a4e597f1375e78bce8a040df5c600c8d3552ef2394"
+      sha256: e3641ec5d63ebf0d9b41bd43201a66e3fc79a65db5f61fc181f04cd27aab950c
       url: "https://pub.dev"
     source: hosted
-    version: "1.17.0"
+    version: "1.16.0"
   mime:
     dependency: "direct main"
     description:
       name: mime
-      sha256: "41a20518f0cb1256669420fdba0cd90d21561e560ac240f26ef8322e45bb7ed6"
+      sha256: "801fd0b26f14a4a58ccb09d5892c3fbdeff209594300a542492cf13fba9d247a"
       url: "https://pub.dev"
     source: hosted
-    version: "2.0.0"
+    version: "1.0.6"
   mime_type:
     dependency: transitive
     description:
@@ -701,11 +668,12 @@ packages:
   path_provider:
     dependency: "direct main"
     description:
-      name: path_provider
-      sha256: "50c5dd5b6e1aaf6fb3a78b33f6aa3afca52bf903a8a5298f53101fdaee55bbcd"
-      url: "https://pub.dev"
-    source: hosted
-    version: "2.1.5"
+      path: "packages/path_provider/path_provider"
+      ref: HEAD
+      resolved-ref: "35fb467533e174411a117b2a030c15d2a3a9687c"
+      url: "https://gitee.com/openharmony-sig/flutter_packages.git"
+    source: git
+    version: "2.1.0"
   path_provider_android:
     dependency: transitive
     description:
@@ -729,6 +697,15 @@ packages:
       sha256: f7a1fe3a634fe7734c8d3f2766ad746ae2a2884abe22e241a8b301bf5cac3279
       url: "https://pub.dev"
     source: hosted
+    version: "2.2.1"
+  path_provider_ohos:
+    dependency: transitive
+    description:
+      path: "packages/path_provider/path_provider_ohos"
+      ref: HEAD
+      resolved-ref: "35fb467533e174411a117b2a030c15d2a3a9687c"
+      url: "https://gitee.com/openharmony-sig/flutter_packages.git"
+    source: git
     version: "2.2.1"
   path_provider_platform_interface:
     dependency: transitive
@@ -855,19 +832,21 @@ packages:
   share_plus:
     dependency: "direct main"
     description:
-      name: share_plus
-      sha256: "14c8860d4de93d3a7e53af51bff479598c4e999605290756bbbe45cf65b37840"
-      url: "https://pub.dev"
-    source: hosted
-    version: "12.0.1"
+      path: "packages/share_plus/share_plus"
+      ref: "br_share_plus-v10.1.1_ohos"
+      resolved-ref: "093085d5ebc487ebc95c00ea77d72f6d1f9f2801"
+      url: "https://gitee.com/openharmony-sig/flutter_plus_plugins.git"
+    source: git
+    version: "10.1.1"
   share_plus_platform_interface:
     dependency: transitive
     description:
-      name: share_plus_platform_interface
-      sha256: "88023e53a13429bd65d8e85e11a9b484f49d4c190abbd96c7932b74d6927cc9a"
-      url: "https://pub.dev"
-    source: hosted
-    version: "6.1.0"
+      path: "packages/share_plus/share_plus_platform_interface"
+      ref: "093085d5ebc487ebc95c00ea77d72f6d1f9f2801"
+      resolved-ref: "093085d5ebc487ebc95c00ea77d72f6d1f9f2801"
+      url: "https://gitee.com/openharmony-sig/flutter_plus_plugins.git"
+    source: git
+    version: "5.0.1"
   shimmer_animation:
     dependency: "direct main"
     description:
@@ -965,10 +944,10 @@ packages:
     dependency: transitive
     description:
       name: test_api
-      sha256: "8161c84903fd860b26bfdefb7963b3f0b68fee7adea0f59ef805ecca346f0c7a"
+      sha256: "522f00f556e73044315fa4585ec3270f1808a4b186c936e612cab0b565ff1e00"
       url: "https://pub.dev"
     source: hosted
-    version: "0.7.10"
+    version: "0.7.6"
   typed_data:
     dependency: transitive
     description:
@@ -988,11 +967,10 @@ packages:
   url_launcher:
     dependency: "direct main"
     description:
-      name: url_launcher
-      sha256: f6a7e5c4835bb4e3026a04793a4199ca2d14c739ec378fdfe23fc8075d0439f8
-      url: "https://pub.dev"
-    source: hosted
-    version: "6.3.2"
+      path: "ohos_plugins/url_launcher/url_launcher"
+      relative: true
+    source: path
+    version: "6.1.12"
   url_launcher_android:
     dependency: transitive
     description:
@@ -1025,6 +1003,13 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.2.2"
+  url_launcher_ohos:
+    dependency: transitive
+    description:
+      path: "ohos_plugins/url_launcher/url_launcher_ohos"
+      relative: true
+    source: path
+    version: "6.0.38"
   url_launcher_platform_interface:
     dependency: transitive
     description:
@@ -1133,11 +1118,10 @@ packages:
   zip_flutter:
     dependency: "direct main"
     description:
-      name: zip_flutter
-      sha256: baecf8deb6bf53a50e5ab513707ab56cc0c25f5b43333aa56ef562e8e7057357
-      url: "https://pub.dev"
-    source: hosted
+      path: "ohos_plugins/zip_flutter"
+      relative: true
+    source: path
     version: "0.0.13"
 sdks:
-  dart: ">=3.10.0 <4.0.0"
-  flutter: ">=3.41.4"
+  dart: ">=3.9.0 <4.0.0"
+  flutter: ">=3.35.0"

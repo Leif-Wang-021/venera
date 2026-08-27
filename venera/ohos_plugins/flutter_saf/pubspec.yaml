@@ -1,0 +1,5 @@
+name: flutter_saf
+description: OHOS stub for flutter_saf (Android SAF not applicable).
+version: 0.0.1
+environment:
+  sdk: '>=3.0.0 <4.0.0'

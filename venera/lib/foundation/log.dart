@@ -76,7 +76,19 @@ class Log {
 
     _logs.add(newLog);
     if(_file != null) {
-      _file!.write(newLog.toString());
+      try {
+        _file!.write(newLog.toString());
+        // Ensure the log reaches the file immediately (IOSink buffers by
+        // default and is never closed, so without this the file stays empty).
+        _file!.flush();
+      } catch (e) {
+        // A broken sink must never take the app down (it previously caused a
+        // white screen during init). Drop it and let the next call rebuild.
+        _file = null;
+        try {
+          _file?.close();
+        } catch (_) {}
+      }
     }
     if (_logs.length > maxLogNumber) {
       var res = _logs.remove(

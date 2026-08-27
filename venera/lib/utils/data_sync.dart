@@ -128,7 +128,7 @@ class DataSync with ChangeNotifier {
         url,
         user: user,
         password: pass,
-        adapter: RHttpAdapter(),
+        adapter: App.isOhos ? null : RHttpAdapter(),
       );
 
       try {
@@ -195,7 +195,7 @@ class DataSync with ChangeNotifier {
         url,
         user: user,
         password: pass,
-        adapter: RHttpAdapter(),
+        adapter: App.isOhos ? null : RHttpAdapter(),
       );
 
       try {

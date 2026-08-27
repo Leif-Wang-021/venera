@@ -20,3 +20,24 @@ dist/
 Thumbs.db
 desktop.ini
 *.dmp
+
+# ---- local experiments (not part of the public fork) ----
+/ratelimit_task/
+
+# ---- Python artifacts ----
+__pycache__/
+*.pyc
+*.pyo
+
+# ---- HarmonyOS / OHOS build artifacts ----
+node_modules/
+oh_modules/
+.hvigor/
+.preview/
+.cxx/
+local.properties
+oh-package-lock.json5
+**/libs/**/*.so
+
+# ---- local debug tools ----
+/tools/procdump.exe

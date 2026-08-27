@@ -1,0 +1,10 @@
+{
+  "app": {
+    "bundleName": "com.github.wgh136.venera",
+    "vendor": "venera",
+    "versionCode": 170,
+    "versionName": "1.7.0",
+    "icon": "$media:layered_image",
+    "label": "$string:app_name"
+  }
+}

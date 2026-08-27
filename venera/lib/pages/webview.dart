@@ -25,9 +25,7 @@ extension WebviewExtension on InAppWebViewController {
     if (url[url.length - 1] == '/') {
       url = url.substring(0, url.length - 1);
     }
-    CookieManager cookieManager = CookieManager.instance(
-      webViewEnvironment: AppWebview.webViewEnvironment,
-    );
+    CookieManager cookieManager = CookieManager.instance();
     final cookies = await cookieManager.getCookies(
       url: WebUri(url),
       webViewController: this,
@@ -76,7 +74,7 @@ class AppWebview extends StatefulWidget {
 
   final bool singlePage;
 
-  static WebViewEnvironment? webViewEnvironment;
+  static bool _environmentCreated = false;
 
   @override
   State<AppWebview> createState() => _AppWebviewState();
@@ -110,14 +108,10 @@ class _AppWebviewState extends State<AppWebview> {
         );
       }
     }
-    if (!App.isWindows) {
+    if (!App.isWindows || AppWebview._environmentCreated) {
       return true;
     }
-    AppWebview.webViewEnvironment = await WebViewEnvironment.create(
-      settings: WebViewEnvironmentSettings(
-        userDataFolder: "${App.dataPath}\\webview",
-      ),
-    );
+    AppWebview._environmentCreated = true;
     return true;
   }
 
@@ -166,9 +160,7 @@ class _AppWebviewState extends State<AppWebview> {
         if (!e.hasData) {
           return const SizedBox();
         }
-        return createWebviewWithEnvironment(
-          AppWebview.webViewEnvironment,
-        );
+        return createWebviewWithEnvironment();
       },
     );
 
@@ -193,9 +185,8 @@ class _AppWebviewState extends State<AppWebview> {
         body: body);
   }
 
-  Widget createWebviewWithEnvironment(WebViewEnvironment? e) {
+  Widget createWebviewWithEnvironment() {
     return InAppWebView(
-      webViewEnvironment: e,
       initialSettings: InAppWebViewSettings(
         isInspectable: true,
       ),

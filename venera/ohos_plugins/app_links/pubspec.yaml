@@ -1,0 +1,5 @@
+name: app_links
+description: OHOS stub for app_links (deeplinks not wired yet).
+version: 6.4.1
+environment:
+  sdk: '>=3.0.0 <4.0.0'

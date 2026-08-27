@@ -1,0 +1,52 @@
+{
+  app: {
+    signingConfigs: [
+      {
+        name: 'default',
+        type: 'HarmonyOS',
+        material: {
+          certpath: 'C:\\Users\\26981\\.ohos\\config\\default_ohos_Te4vPcMXrrgKN21m4fEkvt9m0wxCPDdqMSaD3Sql48=.cer',
+          keyAlias: 'debugKey',
+          keyPassword: '0000001bb97f8503e3df6075729fb619d04919f1b1efda21ddeba5ae3da76dd288cb94b31fe3bdb0b5ba84',
+          profile: 'C:\\Users\\26981\\.ohos\\config\\default_ohos_Te4vPcMXrrgKN21m4fEkvt9m0wxCPDdqMSaD3Sql48=.p7b',
+          signAlg: 'SHA256withECDSA',
+          storeFile: 'C:\\Users\\26981\\.ohos\\config\\default_ohos_Te4vPcMXrrgKN21m4fEkvt9m0wxCPDdqMSaD3Sql48=.p12',
+          storePassword: '0000001bb97f8503e3df6075729fb619d04919f1b1efda21ddeba5ae3da76dd288cb94b31fe3bdb0b5ba84',
+        },
+      },
+    ],
+    products: [
+      {
+        name: 'default',
+        signingConfig: 'default',
+        compatibleSdkVersion: '5.1.0(18)',
+        runtimeOS: 'HarmonyOS',
+      },
+    ],
+    buildModeSet: [
+      {
+        name: 'debug',
+      },
+      {
+        name: 'profile',
+      },
+      {
+        name: 'release',
+      },
+    ],
+  },
+  modules: [
+    {
+      name: 'entry',
+      srcPath: './entry',
+      targets: [
+        {
+          name: 'default',
+          applyToProducts: [
+            'default',
+          ],
+        },
+      ],
+    },
+  ],
+}

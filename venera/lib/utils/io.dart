@@ -215,6 +215,54 @@ class DirectoryPicker {
 
   static const _methodChannel = MethodChannel("venera/method_channel");
 
+  /// HarmonyOS native Pickers (system file manager). Falls back gracefully
+  /// when the plugin is missing (e.g. tests).
+  static const _ohosChannel = MethodChannel("venera/ohos_file");
+
+  static Future<String?> _ohosOpenDocument(List<String> exts) async {
+    var res = await _ohosChannel.invokeMethod<Map<Object?, Object?>>(
+      'openDocument',
+      {'exts': exts},
+    );
+    return res?['path'] as String?;
+  }
+
+  static Future<String?> _ohosPickDirectory() async {
+    // Respect the user's own choice from the system folder picker. This is
+    // the path they selected in the system file manager (e.g. "手机/venera").
+    var res = await _ohosChannel.invokeMethod<Map<Object?, Object?>>(
+      'pickDirectory',
+    );
+    return res?['path'] as String?;
+  }
+
+  static Future<bool> _ohosSaveDocument(String filename, Uint8List data) async {
+    var res = await _ohosChannel.invokeMethod<Map<Object?, Object?>>(
+      'saveDocument',
+      {
+        'filename': filename,
+        'dataBase64': base64Encode(data),
+      },
+    );
+    return res?['saved'] == true;
+  }
+
+  /// Saves an existing local file to a user picked location. The file path is
+  /// passed to native instead of the bytes, so large archives (CBZ exports,
+  /// backups) never transit the method channel as a huge base64 blob (which
+  /// caused OOM crashes on HarmonyOS).
+  static Future<bool> _ohosSaveDocumentFromPath(
+      String filename, String srcPath) async {
+    var res = await _ohosChannel.invokeMethod<Map<Object?, Object?>>(
+      'saveFileFromPath',
+      {
+        'filename': filename,
+        'srcPath': srcPath,
+      },
+    );
+    return res?['saved'] == true;
+  }
+
   Future<Directory?> pickDirectory({bool directAccess = false}) async {
     IO._isSelectingFiles = true;
     try {
@@ -233,6 +281,8 @@ class DirectoryPicker {
           await copyDirectoryIsolate(Directory(directory), Directory(cache));
           directory = cache;
         }
+      } else if (App.isOhos) {
+        directory = await _ohosPickDirectory();
       } else {
         // ios, macos
         directory =
@@ -293,6 +343,12 @@ Future<FileSelectResult?> selectFile({required List<String> ext}) async {
       );
       if (filePath == null) return null;
       file = FileSelectResult(filePath);
+} else if (App.isOhos) {
+      // HarmonyOS system file manager (DocumentViewPicker).
+      var filePath = await DirectoryPicker._ohosOpenDocument(ext);
+      Log.info("OHOS-PICK", "selectFile ext=$ext -> $filePath");
+      if (filePath == null) return null;
+      file = FileSelectResult(filePath);
     } else {
       var xFile = await file_selector.openFile(
         acceptedTypeGroups: <file_selector.XTypeGroup>[typeGroup],
@@ -317,6 +373,9 @@ Future<FileSelectResult?> selectFile({required List<String> ext}) async {
 Future<String?> selectDirectory() async {
   IO._isSelectingFiles = true;
   try {
+    if (App.isOhos) {
+      return await DirectoryPicker._ohosPickDirectory();
+    }
     var path = await file_selector.getDirectoryPath();
     return path;
   } finally {
@@ -346,7 +405,17 @@ Future<void> saveFile(
       await File(cache).writeAsBytes(data);
       file = File(cache);
     }
-    if (App.isMobile) {
+    if (App.isOhos) {
+      // HarmonyOS system file manager (DocumentViewPicker save). For large
+      // payloads (CBZ exports, backups) hand over the on-disk file path so
+      // ArkTS copies it directly instead of shipping megabytes of base64
+      // through the method channel (that previously OOM-crashed the app).
+      if (file != null) {
+        await DirectoryPicker._ohosSaveDocumentFromPath(filename, file.path);
+      } else if (data != null) {
+        await DirectoryPicker._ohosSaveDocument(filename, data);
+      }
+    } else if (App.isMobile) {
       final params = SaveFileDialogParams(sourceFilePath: file!.path);
       await FlutterFileDialog.saveFile(params: params);
     } else if (App.isWindows) {

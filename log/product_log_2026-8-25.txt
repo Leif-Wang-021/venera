@@ -255,3 +255,34 @@ appVersion、源站 minAppVersion 语义比较全部取自该字段，故内部�
 - Linux/macOS 包无法在 Windows 宿主交叉构建（需对应平台），如实说明。
 - 清理项：venera/build、.dart_tool、17 个 %TEMP% 会话 out 文件；
   保留：log/、test/、桌面缓存运行时数据、用户 ratelimit_task/policy.py。
+
+---
+
+## 八、Flutter 鸿蒙化方法调研与本项目可行性评估（纯调研，无代码改动）
+
+### 方法论（社区标准路径，来源 SIG 官方 README）
+- SDK：OpenHarmony-SIG/flutter_flutter（Gitee），dev/master 分支 +
+  DevEco Studio/command-line-tools(API12)+JDK17+hvigor/ohpm/node 环境；
+- 工程：`flutter create --platforms ohos`；构建 `flutter build hap
+  --release [--target-platform ohos-arm64]`；`hdc install` 安装；
+- 插件：OpenHarmony-SIG/flutter_packages 兼容层（file_selector/
+  url_launcher/path_provider/local_auth/share_plus/webview_flutter/
+  flutter_inappwebview#36 等已适配）；FFI 类走 `-t plugin_ffi` 模板自适配。
+
+### 本项目硬事实
+- 上游基线 Flutter 3.41.4；ohos SDK 最新产线为 3.7.12-ohos-1.0.x
+  （另有 3.22.1-ohos-0.1.0 分支）→ 存在大版本鸿沟，为第一阻断项；
+- 依赖盘点：纯 Dart 约20项零成本；SIG 已适配但基线版本落后
+  （share_plus 7.x vs 项目 12.x 等）；无现成 ohos 包需自研的原生件：
+  flutter_qjs(QuickJS)、rhttp(Rust)、zip_flutter/7zip/lodepng(C)、
+  flutter_saf(Android SAF 语义,ohos 无对应)、display_mode/dynamic_color/
+  battery_plus/flutter_memory_info 未入清单；
+- 仓库内已存在 venera/ohos/venera/ 原生 ArkTS 重写路线且进度可观
+  （MIGRATION.md：导航/ArkData 持久层/本地漫画/QuickJS-NG N-API 已实现，
+  FEATURE_STATUS.md 有设备验收台账至 2026-07）——QuickJS 的 N-API 移植
+  经验可直接反哺 Flutter 路线的 flutter_qjs 适配。
+
+### 结论
+技术路径成立但非开箱即用：SDK 降级兼容是先决实验；红区原生件约 8 个
+需按 plugin_ffi 模板逐个交叉编译适配；另存在已部分完成的原生重写路线
+可作为对比选项。

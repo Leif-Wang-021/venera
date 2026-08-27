@@ -11,6 +11,7 @@ import 'package:sqlite3/sqlite3.dart';
 import 'package:venera/foundation/comic_source/comic_source.dart';
 import 'package:venera/foundation/comic_type.dart';
 import 'package:venera/foundation/favorites.dart';
+import 'package:venera/foundation/sqlite_isolate_init.dart';
 import 'package:venera/foundation/image_provider/image_favorites_provider.dart';
 import 'package:venera/foundation/log.dart';
 import 'package:venera/utils/channel.dart';
@@ -237,6 +238,9 @@ class HistoryManager with ChangeNotifier {
 
   static Future<void> _addHistoryAsync(int dbAddr, History newItem) {
     return Isolate.run(() {
+      // Each isolate owns its own statics, so the main isolate's sqlite
+      // library override does not carry over here. Re-register it for OHOS.
+      ensureSqliteLoadedInIsolate();
       var db = sqlite3.fromPointer(ffi.Pointer.fromAddress(dbAddr));
       db.execute(_insertHistorySql, [
         newItem.id,
@@ -263,7 +267,12 @@ class HistoryManager with ChangeNotifier {
     }
 
     _haveAsyncTask = true;
-    await _addHistoryAsync(_db.handle.address, newItem);
+    try {
+      await _addHistoryAsync(_db.handle.address, newItem);
+      Log.info("OHOS-HIST", "addHistoryAsync ok id=${newItem.id}");
+    } catch (e, s) {
+      Log.error("OHOS-HIST", "addHistoryAsync FAIL id=${newItem.id}\n$e\n$s");
+    }
     _haveAsyncTask = false;
     if (_cachedHistoryIds == null) {
       updateCache();
@@ -281,19 +290,25 @@ class HistoryManager with ChangeNotifier {
   ///
   /// This function would be called when user start reading.
   void addHistory(History newItem) {
-    _db.execute(_insertHistorySql, [
-      newItem.id,
-      newItem.title,
-      newItem.subtitle,
-      newItem.cover,
-      newItem.time.millisecondsSinceEpoch,
-      newItem.type.value,
-      newItem.ep,
-      newItem.page,
-      newItem.readEpisode.join(','),
-      newItem.maxPage,
-      newItem.group
-    ]);
+    try {
+      _db.execute(_insertHistorySql, [
+        newItem.id,
+        newItem.title,
+        newItem.subtitle,
+        newItem.cover,
+        newItem.time.millisecondsSinceEpoch,
+        newItem.type.value,
+        newItem.ep,
+        newItem.page,
+        newItem.readEpisode.join(','),
+        newItem.maxPage,
+        newItem.group
+      ]);
+      Log.info("OHOS-HIST", "addHistory ok id=${newItem.id} db=${App.dataPath}/history.db");
+    } catch (e, s) {
+      Log.error("OHOS-HIST", "addHistory FAIL id=${newItem.id}\n$e\n$s");
+      return;
+    }
     if (_cachedHistoryIds == null) {
       updateCache();
     } else {

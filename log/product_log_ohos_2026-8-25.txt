@@ -1,0 +1,302 @@
+# Venera 鸿蒙移植开发日志 · 2026-08-25（OHOS 专线）
+
+> 规则：与原 `product_log_*.txt` 完全隔离，仅记录鸿蒙移植工作。
+> 命名：`product_log_ohos_YYYY-M-D.txt`；当日文件存在则追加，不存在则创建。
+> 每次开发先读本文件最新状态。所有鸿蒙侧产物保存于
+> `F:\DeepSeek_Project\Venera\venera\ohos\venera`。
+
+---
+
+## 一、移植启动：项目调研 + 架构决策（本次会话）
+
+### 1. 原项目盘点
+- Venera v1.7.0+170，漫画阅读器；Flutter 3.41.4 / Dart 3.11（官方原版 SDK，
+  位于 D:\flutter，**无 build hap 能力**）。
+- lib/ 共 139 个 dart 文件：components / foundation(含 comic_source) /
+  network / pages(reader、favorites、settings 等) / utils。
+- 重型原生依赖清单（分诊输入）：
+  - flutter_qjs（QuickJS FFI，漫画源 JS 运行时，核心资产）
+  - rhttp（Rust HTTP 栈）、sqlite3 + sqlite3_flutter_libs
+  - zip_flutter、flutter_7zip、lodepng_flutter（原生压缩/PNG）
+  - flutter_inappwebview、desktop_webview_window（源站登录/Cloudflare）
+  - path_provider、url_launcher、share_plus、file_selector、
+    flutter_file_dialog、flutter_saf、local_auth、battery_plus、
+    app_links、dynamic_color、window_manager（桌面专用）等
+
+### 2. 目标工程现状
+- `venera\ohos\venera`：DevEco 空脚手架已就位
+  （API 6.1.0(23)，单 entry，bundleName com.example.venera）。
+- DevEco Studio 位于 D:\Program Files\Huawei\DevEco Studio。
+
+### 3. 架构决策（用户确认）
+- **采用路线 A：Flutter-OH 混合**——保留全部 Dart UI/业务代码，
+  安装 openharmony 版 Flutter SDK，添加 ohos 平台壳，
+  平台插件用社区 ohos fork / 本地 stub 替换；
+- 参考 skill 案例：Kazumi_ohos（保留 Dart 层 + FlutterAbility 壳 +
+  窄 MethodChannel 边界）；
+- 放弃纯 ArkTS 重写（skill 红旗项：139 个成熟页面重写不可控）。
+- 注意：路线 A 必然涉及 flutter 工程侧改动（pubspec、插件 fork），
+  用户已知悉；鸿蒙专属新增产物仍尽量收敛到 ohos 目录内。
+
+### 4. 日志规则（用户确认）
+- 鸿蒙日志放原 log 目录，命名 `product_log_ohos_日期.txt`，与原日志隔离；
+- 其余沿用原规则：每次开发先读当日文件，存在则追加。
+
+### 5. 待办（按序）
+1. [ ] 获取 openharmony Flutter SDK 并验证 `flutter build hap` 可用；
+2. [x] pubspec 依赖逐个分诊（纯 Dart / UI / FFI / 平台插件四类）；
+3. [ ] 为工程生成 ohos 平台壳并与现有 DevEco 脚手架对齐；
+4. [ ] 插件替换/stub 实施；
+5. [ ] HAP 构建上机验证主流程（探索页 → 详情 → 阅读）。
+
+---
+
+## 二、路线 A 可行性初判（本节结论已被第三节推翻，保留作调研记录）
+
+### 1. 工具链实测
+- gitee `mirrors/flutter_flutter` 已 404；现仓库为
+  `gitee.com/openharmony-sig/flutter_flutter`。
+- 分支盘点：
+  - `dev`/`master`（框架 rev fcd9993，2025-02-20）：**有完整 ohos 工具**
+    （build hap/create --platforms ohos 等），但基于 **Flutter 3.7 /
+    Dart 2.19**；官方文档（flutter_samples/ohos/docs）确认这就是正式线；
+  - `3.22.1-ohos-0.1.0`：Flutter 3.22 / Dart 3.4，但**纯上游镜像、无任何
+    ohos 工具**（无 build hap、flutter_tools 无 ohos 目录）——不可用。
+- 即：鸿蒙 Flutter 生态停在 2023 年的 3.7 线（2025-02 后无更新），
+  与原项目要求的 Flutter 3.41 / Dart ≥3.8 差距约 3 年。
+
+### 2. 依赖解析实验（venera 副本 + dev 工具链）
+- 环境注记：github 直连被重置；FlClash 为 TUN 模式开启后可达。
+  pub 镜像用 `https://pub.dev`（缓存里 pub.flutter-io.cn 与 offline 模式
+  目录不匹配会误报包不存在）；PUB_CACHE 用默认
+  `%LOCALAPPDATA%\Pub\Cache`（内含全部 9 个 git 依赖缓存）。
+- 实验结果（放宽纯 Dart 包约束后仍失败）：
+  - **9 个 git 插件中 6 个硬性要求 Dart ≥3.3~3.6**：
+    flutter_qjs(>=3.5)、flutter_saf(^3.5.4)、lodepng_flutter(^3.5.4)、
+    photo_view(>=3.3)、flutter_inappwebview(^3.5)、flutter_7zip(^3.6)
+    ——pub 无法自动降级 git 固定 ref，必须 fork 改 pubspec；
+  - 传递依赖锁死冲突（如 flutter_test 锁 path 1.8.2 vs 项目要 ^1.9.0），
+    需全量降级且行为漂移；
+  - 应用代码自身：records 语法 ~45~51 处、sealed 类 1 处——Dart 2.19
+    全部需要改写。
+
+### 3. 结论与依据（**已作废**——调研用了 gitee 过时镜像）
+- ~~即使完成上述 fork/降级/语法改写……~~
+- **纠正**：openharmony-sig 正式仓库已迁至 **gitcode.com**，gitee 镜像
+  停在 3.7/3.22 时代。用户机器上本就有
+  `F:\flutter_ohos` = **Flutter 3.35.8-ohos-1.0.3-beta**（Dart 3.9.2，
+  branch oh-3.35.7-release，2026-07-07 仍在维护），完全满足项目
+  Dart ≥3.8 要求。路线 A 可行，按第三节实施。
+
+### 4. 用户最终决策（本轮定案）
+- 用户此前已做过一次鸿蒙移植：`F:\HarmonyOS_Project\VeneraHarmony`
+  （ArkTS 原生，QuickJS NAPI 源运行时/阅读器/下载/登录均已实现，
+  基于 upstream 快照 a0eba91，FEATURE_STATUS.md 记录逐批真机验收流程）；
+- **本轮决策**：以 `F:\DeepSeek_Project\Venera` 当前源码（v1.7.0+170）
+  为准，在 `venera\ohos\venera` **直接完整构建鸿蒙版**；
+  VeneraHarmony 仅作参考（其 libveneraquickjs.so、宿主桥、ArkData
+  schema、页面骨架等可复用资产迁入作代码基座）；
+- 探针目录 probe_venera 已删除。
+
+---
+
+## 三、基座迁移 + 差距分析（本次会话续）
+
+### 1. 基座迁移完成
+- VeneraHarmony 全量源码（493 文件，排除 build/oh_modules/.hvigor/.idea/
+  .cxx 与 local.properties）迁入 `venera\ohos\venera`；
+- ohpm install + hvigor assembleHap：**BUILD SUCCESSFUL**（34s，
+  含 arm64-v8a libveneraquickjs.so 原生编译）；
+- 遗留：真机安装需签名——build-profile.json5 signingConfigs 为空，
+  待用户在 DevEco Studio 配置调试签名后部署 Mate 70 Pro+ 验证。
+- 注意：VeneraHarmony 的 .git 为空目录，无版本历史；新工程建议
+  初始化 git 纳入 F:\DeepSeek_Project\Venera 顶层仓管理（待确认）。
+
+### 2. 上游差距分析（a0eba91 → 本地 v1.7.0+170，33 提交）
+上游 master 停在 a0eba91（已归档）；本地 33 提交全部为增量优化。
+按鸿蒙相关性分类：
+
+**A. 跨平台核心（必须移植）**
+| 上游提交 | 内容 | 鸿蒙落点 |
+|---|---|---|
+| c0dd73a→ff51eb4 | FetchConcurrencyController：NORMAL/PROBING/BACKOFF 状态机 + BURST/CRUISE 限流调度 + 发起节奏器 + pause-only 分流 | 新建 FetchConcurrencyService（纯逻辑可单测） |
+| b748b67 | 全局指数退避+抖动（下载重试零间隔风暴） | 并入下载管线 |
+| 5ad95fe / eb64845 | 过期签名URL自动刷新+死链快败+单图隔离+死链章节处理 | ChapterDownloadService 重写 |
+| abe6110 | 取消任务即删本地文件夹 + chapter_ready_gate 列表/下载两阶段并行 | 同上 |
+| be7305e | 下载速度聚合统计显示 | 下载页 UI |
+| 06a5374 | 图片加载 5xx/429 指数退避重试 + 错误图兜底（不崩溃） | ImageProvider 等价层 |
+| 3084986 | 原生备份 VeneraNativeMeta(sourceKey+id) 保留源身份 | 备份/恢复服务 |
+| ee7019a + bee1880 | CBZ 导出单线程顺序写 + Worker Isolate 字节进度/取消/tmp原子改名 | TaskPool Worker |
+| 4230560 | 版本号单一事实源 1.7.0 | app.json5 versionName=1.7.0 |
+
+**B. 桌面专用（跳过）**：b40ef23、28aad65、d0ab284、2e6d620、7ec802f、
+5fc5bbd(Rust连接池；OHOS 用 Network Kit keep-alive 对齐目标即可)、docs 类。
+
+### 3. 实施批次规划（沿用 FEATURE_STATUS 逐批验收流程）
+- 批次 D1：签名上机，验证基座现有全功能可用；
+- 批次 D2：FetchConcurrencyController 移植（含单测）+ 退避/死链快败/
+  URL刷新/单图隔离 → 下载管线重写；
+- 批次 D3：两阶段并行 + 取消删目录 + 速度统计；
+- 批次 D4：图片加载兜底 + CBZ 导出 Worker + 备份格式；
+- 批次 D5：版本统一 + FEATURE_STATUS 存量待办（SET-005~010 等）。
+
+---
+
+---
+
+## 四、路线 A 正式实施：Flutter-OH 移植打通（本次会话续二）
+
+### 1. 工具链纠正（重要）
+- 用户确认此前移植过 Flutter 鸿蒙版；排查发现本机已有
+  **F:\flutter_ohos = Flutter 3.35.8-ohos-1.0.3-beta**（Dart 3.9.2，
+  gitcode.com/openharmony-sig/flutter_flutter，branch oh-3.35.7-release，
+  2026-07-07 仍在维护）。第二节"不可行"结论系基于 gitee 过时镜像，作废。
+- flutter doctor：HarmonyOS toolchain ✓（DevEco SDK API 23，
+  真机 OpenHarmony 7.0.0.102 / API 26）。
+
+### 2. 移植实施记录
+- flutter create --platforms ohos . → 生成 venera\ohos 平台工程
+  （bundleName com.github.wgh136.venera，devecocli signature generate 签名）；
+- pubspec 调整：flutter 约束 >=3.35.0；flex_seed_scheme→any；
+  app_links ^7→^6.4.1；mime ^2→^1.0.4（share_plus fork 依赖）；
+- dependency_overrides（ohos 插件接线）：
+  path_provider / url_launcher / file_selector → gitee openharmony-sig/
+  flutter_packages（master，主包已含 ohos: 平台声明）；
+  share_plus → openharmony-sig/flutter_plus_plugins 分支
+  br_share_plus-v10.1.1_ohos（master 为 7.2.0 缺 fileNameOverrides）；
+  flutter_inappwebview → openharmony-sig/flutter_inappwebview(master, 6.0.0+ohos)；
+  local_auth fork 与 flutter_localizations 的 intl 版本冲突 → 暂不覆盖
+  （应用锁默认关闭，后续处理）；
+- 本地 stub 包（venera\ohos_plugins\，纯 Dart，仅编译面）：
+  app_links（流空实现）、flutter_memory_info、flutter_file_dialog、
+  display_mode、flutter_saf（含 AndroidDirectory/AndroidFile 空类型，
+  需显式 path getter + dart:io 导入）；
+- venera 源码平台接缝补丁（2 处，均不影响 Windows/Android 行为）：
+  1) webview.dart：移除 WebViewEnvironment（Windows InAppWebView 专用，
+     实际桌面走 DesktopWebview 主路径）；
+  2) init.dart + app.dart：App.isOhos 判定 +
+     sqlite3 open.overrideForAll 加载 libvenerasqlite3.so；
+- sqlite3 原生化：ohos\entry\src\main\cpp\ 加入 sqlite-amalgamation
+  3.53.4（FTS5/RTREE/JSON1），CMake 构建 libvenerasqlite3.so，
+  entry\build-profile.json5 externalNativeOptions 接线。
+
+### 3. 验证
+- flutter build hap --debug：✓ 构建成功（含原生库，116.8s）；
+- 真机 Mate 70 Pro+（7.0.0.102）：安装成功、启动成功；
+- **UI 渲染成功**：主页/搜索/历史/本地/追更/漫画源/图片收藏 + 底部导航
+  全部正常显示（截图 log\flutter_ohos_boot4.jpeg）；
+- 剩余：7 条非致命 PlatformException(channel-error)（未适配插件调用，
+  被 init 容错吞掉）。
+
+### 4. 已知待办（下一轮）
+- flutter_qjs：QuickJS FFI 在 ohos 缺 .so → 漫画源系统不可用；
+  方案：复用 VeneraHarmony 已验证的 quickjs ohos CMake 构建；
+- rhttp（Rust）：Rhttp.init() 失败已被容错；网络栈需确认 dio 回退路径；
+- local_auth（应用锁）、zip/7zip/lodepng（导出）、app_links 真实接线；
+- 移植上游 v1.7.0 增量（fetch-cc 限流调度、下载管线、并行化、导出
+  Worker、备份格式）；
+- 环境备忘：构建命令需 JAVA_HOME=DevEco jbr、PATH 含 flutter_ohos/bin
+  与 DevEco tools(ohpm/hvigor/node)、PUB_CACHE=F:\PUB。
+
+### 5. 端到端验证进展（手机暂离前）
+- 漫画源导入测试：本地 HTTP 服务 + hdc rport 注入
+  http://127.0.0.1:18080/copy_manga.js；
+- **拷贝漫画 1.4.2 成功导入并初始化**——QuickJS 执行源脚本、
+  源设置 UI（收藏排序/CDN线路）正常渲染，JS 引擎全链路打通；
+- 期间修复：rhttp 的 Rust 引擎在 ohos 不可用 → app_dio.dart 平台接缝
+  补丁（App.isOhos 时用 dio IOHttpClientAdapter，Cookie 拦截器不受影响）；
+- 暂停点：源登录页（拷贝漫画需要账号登录才能浏览）；
+- 测试环境：python http.server 18080 已停；设备残留 rport tcp:18080
+  （无害，恢复时清理）；
+- 恢复后待验证：探索页/分类/搜索 → 详情 → 章节列表 → 阅读器 →
+  下载 → 收藏/历史 → 本地导入(CBZ) → 设置。
+
+---
+
+## 五、WebDAV 同步测试：zip_flutter 原生库缺失（本轮定位）
+
+### 1. 排查过程（以真机日志为主，遵循用户要求）
+- 现象：设置-应用-数据同步使用用户 WebDAV
+  （webdav.adamaik.top:2004/WebDAV/venera，用户输入凭据），
+  选择"下载"点"继续"后报错；
+- 日志（hilog XComFlutterOHOS_Native）：
+  - 15:12:42 Downloading data from WebDAV server（WebDAV 连接成功！）
+  - 15:12:44 Unsupported operation: Unknown platform: ohos
+    at package:zip_flutter/src/zip_dart_base.dart:23
+    → importAppData → ZipFile.openAndExtract；
+- 结论：WebDAV 链路（WebDAV 协议/认证/下载）**已通**，
+  失败点在解压 .venera 备份的 zip_flutter 原生库（ohos 无 .so）；
+- 与 sqlite3/QuickJS 同型问题 → 待为 ohos 编译 zip 原生库。
+
+### 2. 平台回归防护（用户要求"别让我其他版本失效"）
+- 全部代码补丁均带 App.isOhos 守卫或为 Windows 专用死路径；
+- dependency_overrides 全局生效，需要在 ohos 验收后对
+  Windows/Android 跑 analyze + 构建 + 冒烟把关；
+- 本项列入待办。
+
+### 3. 待办（等用户"继续"）
+- zip_flutter ohos 原生构建（kuba zip C 源码，复用现有 CMake 模式）；
+- 其余 FFI 插件逐个原生化：lodepng_flutter、flutter_7zip、
+  flutter_memory_info（stub 已顶）、rhttp（ohos Rust 可行性评估）、
+  local_auth（intl 冲突处理）；
+- 之后：探索/详情/阅读器/下载/本地导入(CBZ) 真机全链路；
+- 上游 v1.7.0 增量移植（fetch-cc 限流调度器等）；
+- Windows/Android 回归验证。
+
+### 6. WebDAV 同步修复 + 完整验证成功（重大里程碑）
+- 修复：zip_flutter vendor 到 ohos_plugins + ohos 加载分支
+  （libzip_flutter.so）+ entry CMake 目标（zip.cc+miniz，
+  需显式 CXX_STANDARD 17，ohos 工具链默认标准不含 std::filesystem）；
+- 修复：data_sync.dart 两处 newClient 的 RHttpAdapter 加
+  App.isOhos 守卫（webdav_client fork 默认 IOHttpClientAdapter）；
+- 真机验证（用户输入凭据 webdav.adamaik.top:2004）：
+  - WebDAV 认证/下载 ✓ → zip 解压 ✓ → 配置导入 ✓ → 重启生效 ✓；
+  - **漫画源 30 个全部同步成功**，封面网络加载正常；
+  - **阅读历史 6 条**（含封面）与**追更 2 项更新**同步恢复；
+  - 外观主题（粉色）随配置恢复；
+  - 日志仅 komiic.com 源 Connection reset（该站需特殊网络，非移植问题）；
+- 至此核心链路全通：QuickJS 源运行时 + sqlite3 + 网络(dio IO 适配) +
+  zip 归档 + WebDAV 同步 + UI 渲染，Flutter 版在鸿蒙真机可用。
+
+### 7. 阅读链路验证通过（核心移植完成里程碑）
+- 修复：IOHttpClientAdapter 补 badCertificateCallback，对齐原版
+  rhttp 的 ignoreBadCertificate 设置语义（漫画 CDN 证书常过期）；
+  app_dio.dart 补 dart:io 导入；
+- 真机全链路：探索页(多源标签/推荐/热门) → 详情页(封面/描述/标签/
+  收藏/下载/阅读按钮) → 章节加载(001话 1/30) → **阅读器图片渲染成功**
+  （截图 log\ui_reader3.png）；
+- 已知非移植问题：拷贝漫画源服务端风控（提示等待1小时，原版同样）；
+  komiic.com 需特殊网络；
+- **核心结论：Flutter 版 Venera 在 HarmonyOS 真机可用**——
+  UI/sqlite/QuickJS 源运行时/网络/zip/WebDAV 同步/阅读器全通。
+
+### 8. 剩余待办
+1. lodepng_flutter、flutter_7zip 原生化（本地导入 CBZ/PNG、7z 支持）；
+2. local_auth（intl 版本冲突，应用锁功能）；
+3. rhttp Rust ohos 构建（可选——IO 回退已可用，Rust 版为连接池优化）；
+4. 上游 v1.7.0 增量移植（fetch-cc 限流调度器、下载管线并行化、
+   取消删目录、导出 Worker、备份格式、版本统一）；
+5. Windows/Android 回归验证（dependency_overrides 影响全平台）；
+6. app_links 真实接线（深链）、flutter_saf 替代方案（ohos 无 SAF）。
+
+### 9. 平台回归防护执行（三平台构建全绿）
+- 背景：dependency_overrides 全局生效，Windows/Android 会受影响；用户
+  强调不得破坏其他平台；
+- analyze：0 error（74 条为 vendored 插件风格提示；已排除 example 目录）；
+- **Windows build --debug ✓**（venera.exe）；
+- **Android build --debug ✓**（app-debug.apk，含 rhttp Rust native 构建）；
+- **HarmonyOS build --debug ✓**（entry-default-signed.hap）；
+- 修复过程：
+  1. vendored zip_flutter 缺 windows/ 等平台目录导致 Windows 构建失败
+     → 补齐 android/ios/linux/macos/windows；
+  2. sig inappwebview fork 的 android 模块是 v1 embedding（FlutterView/
+     PluginRegistry.Registrar，Flutter 3.35 embedding 已移除）→ 决定整体
+     vendor sig monorepo 到 ohos_plugins/flutter_inappwebview/，所有子包
+     git 依赖改写为本地 path；android 模块 v1→v2 补丁（删除 FlutterView/
+     registrar 字段与 registerWith，修复 Util/ChromeClient 回退分支）；
+  3. PowerShell Set-Content 写入的 Java 带 BOM 导致 javac 报错 → 改
+     UTF8Encoding(false) 去 BOM 重写；
+- ohos HAP 真机冒烟：应用正常启动，仅源站 Cloudflare 挑战（正常现象）；
+- 三平台一条龙构建结构：
+  依赖覆盖：path_provider/url_launcher/file_selector/shaare_plus +
+  vendored（flutter_qjs/zip_flutter/flutter_inappwebview 单体）+ 5 个 stub。

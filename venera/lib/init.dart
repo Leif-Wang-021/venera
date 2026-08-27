@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:ffi' as ffi;
 
 import 'package:display_mode/display_mode.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_saf/flutter_saf.dart';
 import 'package:rhttp/rhttp.dart';
+import 'package:sqlite3/open.dart' as sqlite3_open;
 import 'package:venera/foundation/app.dart';
 import 'package:venera/foundation/cache_manager.dart';
 import 'package:venera/foundation/comic_source/comic_source.dart';
@@ -36,6 +38,10 @@ extension _FutureInit<T> on Future<T> {
 
 Future<void> init() async {
   await App.init().wait();
+  if (App.isOhos) {
+    // The bundled libvenerasqlite3.so is packaged by the ohos entry module.
+    sqlite3_open.open.overrideForAll(() => ffi.DynamicLibrary.open('libvenerasqlite3.so'));
+  }
   await SingleInstanceCookieJar.createInstance();
   try {
     var futures = [

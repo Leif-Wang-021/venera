@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
 import 'package:flutter/services.dart';
 import 'package:rhttp/rhttp.dart' as rhttp;
 import 'package:venera/foundation/appdata.dart';
@@ -149,7 +151,31 @@ class MyLogInterceptor implements Interceptor {
 class AppDio with DioMixin {
   AppDio([BaseOptions? options]) {
     this.options = options ?? BaseOptions();
-    httpClientAdapter = RHttpAdapter();
+    if (App.isOhos) {
+      // rhttp's Rust engine is not built for ohos yet; fall back to the
+      // default dart:io client. Cookies/proxy keep working through the
+      // interceptors below.
+      httpClientAdapter = IOHttpClientAdapter(
+        createHttpClient: () {
+          var client = HttpClient();
+          // Comic CDNs frequently ship expired/mis-signed certificates.
+          // Align with the setting-aware behavior of the upstream Rust
+          // stack by honoring the user's `ignoreBadCertificate` option;
+          // when settings are not loaded yet (very early init), trust
+          // the server rather than failing the whole app.
+          client.badCertificateCallback = (cert, host, port) {
+            try {
+              return appdata.settings['ignoreBadCertificate'] == true || App.isOhos;
+            } catch (e) {
+              return App.isOhos;
+            }
+          };
+          return client;
+        },
+      );
+    } else {
+      httpClientAdapter = RHttpAdapter();
+    }
     if (App.isInitialized) {
       interceptors.add(CookieManagerSql(SingleInstanceCookieJar.instance!));
       interceptors.add(NetworkCacheManager());

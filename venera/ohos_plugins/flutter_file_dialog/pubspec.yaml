@@ -1,0 +1,5 @@
+name: flutter_file_dialog
+description: OHOS stub for flutter_file_dialog.
+version: 3.0.3
+environment:
+  sdk: '>=3.0.0 <4.0.0'

@@ -33,7 +33,13 @@ class _AppSettingsState extends State<AppSettings> {
           actionTitle: "Set".tl,
           callback: () async {
             String? result;
-            if (App.isAndroid) {
+            if (App.isOhos) {
+              // HarmonyOS keeps everything in the app's sandbox; let the user
+              // pick (or create) a writable sub-directory inside it.
+              result =
+                  await showDialog<String>(context: context, builder: (c) => _OhosStorageDirDialog());
+              if (result == null) return;
+            } else if (App.isAndroid) {
               var picker = DirectoryPicker();
               result = (await picker.pickDirectory())?.path;
             } else if (App.isIOS) {
@@ -55,6 +61,13 @@ class _AppSettingsState extends State<AppSettings> {
               context.showMessage(message: "Path set successfully".tl);
               setState(() {});
             }
+          },
+        ).toSliver(),
+_CallbackSetting(
+          title: "Open Storage Directory".tl,
+          actionTitle: "Open".tl,
+          callback: () {
+            context.to(() => StorageBrowserPage(path: LocalManager().path));
           },
         ).toSliver(),
         ListTile(
@@ -338,6 +351,7 @@ class _LogsPageState extends State<LogsPage> {
   }
 
   void saveLog(String log) async {
+    debugPrint('OHOS-LOGEXPORT len=${log.length}');
     saveFile(data: utf8.encode(log), filename: 'log.txt');
   }
 }
@@ -456,7 +470,7 @@ class _WebdavSettingState extends State<_WebdavSetting> {
                                   child: IconButton(
                                     icon: const Icon(Icons.open_in_new),
                                     onPressed: () {
-                                      launchUrlString("https://github.com/venera-app/venera/blob/b08f11f6ac49bd07d34b4fcde233ed07e86efbc9/lib/foundation/appdata.dart#L138");
+                                      launchUrlString("https://github.com/Leif-Wang-021/venera/blob/b08f11f6ac49bd07d34b4fcde233ed07e86efbc9/lib/foundation/appdata.dart#L138");
                                     },
                                   ),
                                 ),
@@ -588,6 +602,121 @@ class _WebdavSettingState extends State<_WebdavSetting> {
           ],
         ).paddingHorizontal(16),
       ),
+    );
+  }
+}
+
+/// HarmonyOS sandbox-friendly storage directory picker: choose an existing
+/// writable sub-directory of the app data dir, or create a new one by name.
+class _OhosStorageDirDialog extends StatefulWidget {
+  const _OhosStorageDirDialog();
+
+  @override
+  State<_OhosStorageDirDialog> createState() => _OhosStorageDirDialogState();
+}
+
+class _OhosStorageDirDialogState extends State<_OhosStorageDirDialog> {
+  final controller = TextEditingController();
+  String? error;
+
+  List<Directory> get _dirs {
+    try {
+      return Directory(App.dataPath)
+          .listSync()
+          .whereType<Directory>()
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  String? _probe(String path) {
+    try {
+      var d = Directory(path);
+      if (!d.existsSync()) {
+        d.createSync(recursive: true);
+      }
+      var f = File(p.join(path, '.w'));
+      f.writeAsStringSync('ok');
+      f.deleteSync();
+      return null;
+    } catch (e) {
+      return e.toString();
+    }
+  }
+
+  void _select(String path) {
+    var err = _probe(path);
+    if (err != null) {
+      setState(() => error = err);
+      return;
+    }
+    Navigator.pop(context, path);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dirs = _dirs;
+    return AlertDialog(
+      title: Text("Choose storage subdirectory".tl),
+      content: SizedBox(
+        width: 420,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextField(
+              controller: controller,
+              decoration: InputDecoration(
+                hintText: "New subdirectory name".tl,
+                prefixIcon: const Icon(Icons.create_new_folder),
+              ),
+              onSubmitted: (v) {
+                if (v.trim().isEmpty) return;
+                _select(p.join(App.dataPath, v.trim()));
+              },
+            ),
+            const SizedBox(height: 4),
+            if (error != null)
+              Text(
+                error!,
+                style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.error),
+              ),
+dirs.isEmpty
+                ? Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Text("No folders available".tl),
+                  )
+                : Flexible(
+                    child: SingleChildScrollView(
+                      child: Column(
+                        children: dirs
+                            .map((d) => ListTile(
+                                  dense: true,
+                                  title: Text(d.path.split('/').last),
+                                  onTap: () => _select(d.path),
+                                ))
+                            .toList(),
+                      ),
+                    ),
+                  ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text("cancel".tl),
+        ),
+        FilledButton(
+          onPressed: () {
+            var name = controller.text.trim();
+            if (name.isEmpty) return;
+            _select(p.join(App.dataPath, name));
+          },
+          child: Text("create".tl),
+        ),
+      ],
     );
   }
 }

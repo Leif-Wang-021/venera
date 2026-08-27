@@ -4,8 +4,8 @@
 # This file should be version controlled and should not be manually edited.
 
 version:
-  revision: "b0850beeb25f6d5b10426284f506557f66181b36"
-  channel: "stable"
+  revision: "20c4a044ec6386bfd5c428cc0921b4bb1ba51de2"
+  channel: "[user-branch]"
 
 project_type: app
 
@@ -13,23 +13,11 @@ project_type: app
 migration:
   platforms:
     - platform: root
-      create_revision: b0850beeb25f6d5b10426284f506557f66181b36
-      base_revision: b0850beeb25f6d5b10426284f506557f66181b36
-    - platform: android
-      create_revision: b0850beeb25f6d5b10426284f506557f66181b36
-      base_revision: b0850beeb25f6d5b10426284f506557f66181b36
-    - platform: ios
-      create_revision: b0850beeb25f6d5b10426284f506557f66181b36
-      base_revision: b0850beeb25f6d5b10426284f506557f66181b36
-    - platform: linux
-      create_revision: b0850beeb25f6d5b10426284f506557f66181b36
-      base_revision: b0850beeb25f6d5b10426284f506557f66181b36
-    - platform: macos
-      create_revision: b0850beeb25f6d5b10426284f506557f66181b36
-      base_revision: b0850beeb25f6d5b10426284f506557f66181b36
-    - platform: windows
-      create_revision: b0850beeb25f6d5b10426284f506557f66181b36
-      base_revision: b0850beeb25f6d5b10426284f506557f66181b36
+      create_revision: 20c4a044ec6386bfd5c428cc0921b4bb1ba51de2
+      base_revision: 20c4a044ec6386bfd5c428cc0921b4bb1ba51de2
+    - platform: ohos
+      create_revision: 20c4a044ec6386bfd5c428cc0921b4bb1ba51de2
+      base_revision: 20c4a044ec6386bfd5c428cc0921b4bb1ba51de2
 
   # User provided section
 

@@ -28,14 +28,19 @@ class ImportComic {
     }
     var controller = showLoadingDialog(App.rootContext, allowCancel: false);
     try {
+      Log.info("OHOS-IMPORT", "cbz import start: ${file.path}");
       var comic = await CBZ.import(File(file.path));
+      Log.info("OHOS-IMPORT", "cbz import done: ${comic.title}");
       imported[selectedFolder] = [comic];
     } catch (e, s) {
       Log.error("Import Comic", e.toString(), s);
       App.rootContext.showMessage(message: e.toString());
     }
     controller.close();
-    return registerComics(imported, false);
+    Log.info("OHOS-IMPORT", "registerComics start");
+    var r = registerComics(imported, copyToLocal);
+    Log.info("OHOS-IMPORT", "registerComics done");
+    return r;
   }
 
   Future<bool> multipleCbz() async {
@@ -61,7 +66,7 @@ class ImportComic {
       }
       imported[selectedFolder] = comics;
       controller.close();
-      return registerComics(imported, false);
+      return registerComics(imported, copyToLocal);
     }
     return false;
   }
@@ -344,6 +349,7 @@ class ImportComic {
   Future<Map<String?, List<LocalComic>>> _copyComicsToLocalDir(
       Map<String?, List<LocalComic>> comics) async {
     var destPath = LocalManager().path;
+    Log.info("OHOS-IMP", "copy start destPath=$destPath");
     Map<String?, List<LocalComic>> result = {};
     for (var favoriteFolder in comics.keys) {
       result[favoriteFolder] = comics[favoriteFolder]!
@@ -351,6 +357,8 @@ class ImportComic {
           .toList();
       comics[favoriteFolder]!
           .removeWhere((c) => c.directory.startsWith(destPath));
+      Log.info("OHOS-IMP",
+          "folder=$favoriteFolder src=${comics[favoriteFolder]?.map((c) => c.directory).toList()}");
 
       if (comics[favoriteFolder]!.isEmpty) {
         continue;
@@ -380,8 +388,15 @@ class ImportComic {
           ));
         }
       } catch (e, s) {
-        App.rootContext.showMessage(message: "Failed to copy comics".tl);
         Log.error("Import Comic", e.toString(), s);
+        // Fallback: keep the original (already imported) references instead of
+        // silently dropping them, so the import still succeeds even when the
+        // copy-to-local step fails (e.g. sandbox quirks).
+        for (var c in comics[favoriteFolder]!) {
+          result[favoriteFolder]!.add(c);
+        }
+        App.rootContext.showMessage(
+            message: "Copy to local folder failed; kept in place".tl);
         return result;
       }
     }
@@ -396,6 +411,8 @@ class ImportComic {
       }
       int importedCount = 0;
       for (var folder in importedComics.keys) {
+        Log.info("OHOS-IMPORT",
+            "register: folder=$folder count=${importedComics[folder]?.length}");
         for (var comic in importedComics[folder]!) {
           // Keep the original source comic id when the backup is linked to a
           // real source (comicType != local), so the imported comic stays the

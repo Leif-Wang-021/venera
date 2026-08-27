@@ -1,0 +1,47 @@
+# Venera 鸿蒙移植开发日志 · 2026-08-27（OHOS 专线）
+
+> 规则：每日新文件；先读昨日日志承接；日志与产品隔离；产物收敛
+> 于项目内；不破坏 Windows/Android；测试以真机日志为主。
+
+## 承接（26 日终态）
+- 核心链路全通；本轮已解决/实现项见下，终态构建基于 26-27 全部代码。
+
+## 一、清理工程临时文件（本轮）
+### 删除项（释放约 18GB）
+- venera\build（17.5GB 全平台产物）
+- .dart_tool（402MB）
+- ohos\.hvigor / ohos\.idea / ohos\oh_modules
+- ohos\entry\build(507MB) / ohos\entry\.cxx / ohos\entry\oh_modules
+- flutter_*.log 崩溃报告
+- **保留**：log/、lib、assets、ohos\entry\src、AppScope、build-profile、
+  pubspec、analysis_options、ohos_plugins（源码，含 vendored 插件）
+
+### 清理后验证
+- flutter pub get ✓（F:\PUB 缓存命中）
+- 全量 flutter build hap --debug ✓（140s，从零重编原生库）
+- HAP 原生库齐全：qjs/sqlite3/zip_flutter/lodepng/flutter_7zip/
+  flutter+entry+c++_shared ✓
+- 真机部署+启动 ✓（无 Unhandled/StreamSink/fatal 日志，Unhandled=0）
+
+## 二、本轮（26-27）修复与功能清单（完整交付）
+1. 导出 CBZ OOM 崩溃 → saveFileFromPath（路径级拷贝，免 base64 大通道）✓
+2. 120Hz → EntryAbility 用 displaySync 申请 expected120/min90/max120 ✓
+3. 链接打开 → 一律系统浏览器（url_launcher_ohos 直走 launchUrl；
+   BrowserPage 内置页保留注册备用）✓
+4. 内置轻量文件管理器（排序/长按五项/多选批量/实时搜索/面包屑）✓
+5. 存储目录：私有范围内子目录选择+迁移+应用内（已并入管理器）✓
+6. 大圆角启动图标（源图方形 → 按33%半径显式圆角）✓
+7. 其他：isolate sqlite 覆盖(历史/收藏/缓存)、日志 flush+防崩、
+   证书回退、系统 Picker 全接入、local_auth、WebDAV、QuickJS/
+   zip/lodepng/7zip 原生等（详见 25/26 日志）。
+
+## 三、构建/运行备忘
+- 构建环境：JAVA_HOME=DevEco jbr；PATH 含 flutter_ohos/bin 与 DevEco
+  tools(ohpm/hvigor/node)；PUB_CACHE=F:\PUB
+- 命名/安装包：com.github.wgh136.venera（覆盖安装保留数据；卸载清数据，
+  数据可 WebDAV 同步恢复）
+
+## 四、已知边界（诚实声明）
+- 存储目录系统文件管理不可见（沙箱）；公共 Download 目录需 URI 大改造
+- 历史封面部分源站握手被重置（网络层）；拷贝漫画 1 小时风控为源站特性
+- display_mode/local_auth(部分) 等平台差异沿用 stub/适配方案

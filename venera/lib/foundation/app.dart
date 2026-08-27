@@ -22,6 +22,8 @@ class _App {
 
   bool get isAndroid => Platform.isAndroid;
 
+  bool get isOhos => Platform.operatingSystem == 'ohos';
+
   bool get isIOS => Platform.isIOS;
 
   bool get isWindows => Platform.isWindows;

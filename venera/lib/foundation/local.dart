@@ -201,19 +201,41 @@ class LocalManager with ChangeNotifier {
   // return error message if failed
   Future<String?> setNewPath(String newPath) async {
     var newDir = Directory(newPath);
+    Log.info("OHOS-PATH", "setNewPath: newPath=$newPath");
     if (!await newDir.exists()) {
+      Log.error("OHOS-PATH", "setNewPath: not exists");
       return "Directory does not exist";
     }
-    if (!await newDir.list().isEmpty) {
-      return "Directory is not empty";
+    if (!App.isOhos) {
+      // On HarmonyOS the target is always a directory freshly created by the
+      // system Picker bridge (never pre-populated), and dart:io's
+      // Directory.list may surface unexpected entries on the sandbox
+      // filesystem, so the emptiness check is skipped there.
+      var entries = <Object>[];
+      try {
+        await for (var e in newDir.list()) {
+          entries.add(e);
+        }
+      } catch (e) {
+        Log.error("OHOS-PATH", "setNewPath: list error $e");
+      }
+      Log.info("OHOS-PATH", "setNewPath: entries=${entries.length}");
+      if (entries.isNotEmpty) {
+        return "Directory is not empty";
+      }
     }
     try {
+      // Probe the new directory is actually writable before accepting it.
+      var probe = File(FilePath.join(newPath, '.venera_writable'));
+      await probe.writeAsString('ok');
+      await probe.delete();
       await copyDirectoryIsolate(
         directory,
         newDir,
       );
       await File(FilePath.join(App.dataPath, 'local_path'))
           .writeAsString(newPath);
+      Log.info("OHOS-PATH", "setNewPath: ok, wrote local_path=$newPath");
     } catch (e, s) {
       Log.error("IO", e, s);
       return e.toString();

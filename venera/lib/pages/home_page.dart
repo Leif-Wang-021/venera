@@ -605,7 +605,7 @@ class _ImportComicsWidgetState extends State<_ImportComicsWidget> {
           ),
           onPressed: () {
             launchUrlString(
-                "https://github.com/venera-app/venera/blob/master/doc/import_comic.md");
+                "https://github.com/Leif-Wang-021/venera/blob/master/doc/import_comic.md");
           },
         ).fixWidth(90).paddingRight(8),
         Button.filled(
@@ -623,20 +623,29 @@ class _ImportComicsWidgetState extends State<_ImportComicsWidget> {
     setState(() {
       loading = true;
     });
-    var importer = ImportComic(
-        selectedFolder: selectedFolder, copyToLocal: copyToLocalFolder);
-    var result = switch (type) {
-      0 => await importer.directory(true),
-      1 => await importer.directory(false),
-      2 => await importer.cbz(),
-      3 => await importer.multipleCbz(),
-      4 => await importer.ehViewer(),
-      5 => await importer.localDownloads(),
-      int() => true,
-    };
-    if (result) {
-      context.pop();
-    } else {
+    Log.info("OHOS-IMPORT", "selectAndImport type=$type");
+    try {
+      var importer = ImportComic(
+          selectedFolder: selectedFolder, copyToLocal: copyToLocalFolder);
+      var result = switch (type) {
+        0 => await importer.directory(true),
+        1 => await importer.directory(false),
+        2 => await importer.cbz(),
+        3 => await importer.multipleCbz(),
+        4 => await importer.ehViewer(),
+        5 => await importer.localDownloads(),
+        int() => true,
+      };
+      Log.info("OHOS-IMPORT", "selectAndImport result=$result");
+      if (result) {
+        context.pop();
+      } else {
+        setState(() {
+          loading = false;
+        });
+      }
+    } catch (e, s) {
+      Log.error("OHOS-IMPORT", "$e\n$s");
       setState(() {
         loading = false;
       });

@@ -3,6 +3,7 @@ import 'dart:isolate';
 
 import 'package:crypto/crypto.dart';
 import 'package:sqlite3/sqlite3.dart';
+import 'package:venera/foundation/sqlite_isolate_init.dart';
 import 'package:venera/utils/io.dart';
 
 import 'app.dart';
@@ -25,6 +26,7 @@ class CacheManager {
 
   static Future<int> _scanDir(Pointer<void> dbP, String dir) async {
     var res = await Isolate.run(() async {
+      ensureSqliteLoadedInIsolate();
       int totalSize = 0;
       List<String> unmanagedFiles = [];
       var db = sqlite3.fromPointer(dbP);

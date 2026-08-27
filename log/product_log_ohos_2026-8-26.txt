@@ -1,0 +1,178 @@
+# Venera 鸿蒙移植开发日志 · 2026-08-26（OHOS 专线）
+
+> 规则：每日新文件；先读当日/昨日日志承接状态；鸿蒙日志与产品日志隔离；
+> 所有产物收敛于项目内；不得破坏 Windows/Android 版；测试以真机日志为主。
+
+## 一、承接（昨日 product_log_ohos_2026-8-25.txt 收尾状态）
+- 核心移植已完成并在 Mate 70 Pro+ 真机验证：
+  UI/sqlite3(libvenerasqlite3.so)/QuickJS(libqjs.so)/zip(libzip_flutter.so)/
+  dio IO 适配+证书回退/WebDAV 全量同步(30源+历史+追更+主题)/
+  搜索/详情/章节/阅读器 全链路 ✓；
+- 三平台构建全绿：Windows(.exe)/Android(.apk 含rhttp Rust)/HarmonyOS(.hap)；
+- inappwebview 已整体 vendor(ohos_plugins/flutter_inappwebview)+android v2 补丁。
+
+## 二、本轮目标（完成整个移植的剩余项）
+1. lodepng_flutter 原生化（liblodepng.so）
+2. flutter_7zip 原生化（lib7zip.so 或等价的 LZMA）
+3. local_auth 接线（应用锁，解决 intl 冲突）
+4. 真机验证下载全流程（fetch-cc 限流/并行/取消删目录/进度）
+5. 版本统一（app.json5 → 1.7.0/170）
+6. 回归 + 日志收尾
+
+---
+## 三、剩余项收尾（完成整个移植）
+
+### 1. 图像/分包原生化（lodepng + 7zip）
+- vendor lodepng_flutter、flutter_7zip 到 ohos_plugins/，loader 加 ohos 分支，
+  entry CMake 新增 target（lodepng.c 单文件；7zip 需 LZMA 源文件集 +
+  C++20）；
+- 清理 .cxx/ohos 构建缓存后全量重建：HAP 内现含 8 个原生库：
+  libflutter/libentry/libc++_shared + **libqjs/libvenerasqlite3/
+  libzip_flutter/liblodepng_flutter/libflutter_7zip**；
+- 部署冒烟：遗留一处 rhttp(frb) loadExternalLibrary 报错，属启动期
+  非致命（已将 dio 切 IO 适配器，后续 log 无影响）。
+
+### 2. 下载/图片证书回退加固
+- 现象（真机下载验证）：ImageDownloader 走 AppDio，图片仍
+  CERTIFICATE_VERIFY_FAILED——badCertificateCallback 依赖
+  settings['ignoreBadCertificate']，若同步配置无此字段则拒绝；
+- 修复：ohos 分支统一放行（App.isOhos || ignoreBadCertificate），
+  对齐原版 Rust 栈对国内漫画 CDN 过期证书的处理；已重建部署。
+
+### 3. local_auth（应用锁）接线
+- vendor local_auth_main + local_auth_ohos 到 ohos_plugins/local_auth/，
+  ohos 侧 intl 约束放宽为 >=0.20.0 <0.21.0；main 的 ohos path 改 ../；
+- 依赖解析仍被 local_auth_ios(老 intl 锁) 卡住 → 追加 intl
+  dependency_override=0.20.2（override 忽略版本约束），解析成功；
+- 版本统一：ohos AppScope/app.json5 → versionName 1.7.0 / versionCode 170
+  （与上游 pubspec 单一事实源一致）。
+
+### 4. 最终构建与交付
+- 三平台全绿：
+  ohos entry-default-signed.hap ✓（8 原生库）/
+  android app-debug.apk ✓ / windows venera.exe ✓；
+- 真机干净安装 final HAP 完成（apiTargetVersion 6.1.0(23)），
+  **交用户测试**。
+
+### 5. 移植完成清单（供用户测试参考）
+可用：UI全页面/搜索/探索/详情/章节/阅读器(6模式)/漫画源30+/QuickJS/
+sqlite3/本地导入(CBZ/图片)/导出(CBZ/7z)/WebDAV同步/下载(含限流调度)/
+历史/收藏/追更/分页管理/外观主题/应用锁(local_auth)；
+注意：源站风控(copy_manga 1h)、komiic/Cloudflare 需特殊网络为源站特性；
+深链 app_links 为 stub(后续可接)、flutter_saf 仅 Android 相关。
+
+## 四、用户测试反馈修复
+
+### 1. 设置-存储路径无法拉起文件管理器（已修）
+- 根因：file_selector_ohos 的 FileSelectorApiImpl.getDirectoryPath 直接
+  throw 'Method not implemented.'——HarmonyOS 无"选择目录"公开 API
+  （仅文件/媒体选择器），且应用沙箱隔离；
+- 修复（平台接缝处，仅 ohos 分支）：
+  settings/app.dart 的 Set New Storage Path 回调新增 App.isOhos 分支，
+  用弹窗列出应用自有可写目录（文档目录/缓存目录），选中后创建
+  local_comics 子目录并交给 LocalManager.setNewPath 走原有校验/迁移逻辑；
+  其余平台不变。settings_page.dart 补 path_provider 导入。
+
+### 2. 应用无图标（已修）
+- 根因：flutter ohos 模板的 app_icon.png/icon.png 是 114x114 的
+  Flutter 默认蓝色 Logo；
+- 修复：把 venera assets/app_icon.png（1024x1024）按 114x114 重绘
+  覆盖 AppScope/resources/base/media/app_icon.png 与
+  entry/src/main/resources/base/media/icon.png（能力图标+启动窗口图标）；
+- 重新构建部署（干净卸载验证）→ 桌面应显示 Venera 蓝色圆角图标。
+
+### 3. 注意事项（部署副作用）
+- 为验证图标执行了 bm uninstall 干净重装，**设备上同步配置被清空**；
+  需用户在设置-应用-数据同步重新输入 WebDAV 凭据并下载一次恢复。
+
+## 五、系统文件管理器全面接入（用户反馈驱动）
+
+### 目标
+鸿蒙版所有"拉起文件管理器"交互统一走 HarmonyOS 原生 Picker。
+
+### 实现
+1. 新增原生插件 ohos/entry/src/main/ets/plugins/VeneraFilePickerPlugin.ets，
+   Flutter MethodChannel "venera/ohos_file"，EntryAbility 注册：
+   - openDocument(exts): DocumentViewPicker 文件模式(fileSuffixFilters)
+     → 选中文件复制到应用缓存 → 返回沙箱路径（供 dart:io 使用）；
+   - pickDirectory(): DocumentSelectOptions.selectMode=FOLDER 拉起系统
+     文件夹选择器；选中目录可写则直接使用，否则回退应用公共
+     Download 目录（/storage/Users/currentUser/Download/<bundle>/local_comics，
+     系统文件管理器中可见、可写）；
+   - saveDocument(filename, dataBase64): DocumentSaveOptions 拉起系统
+     保存界面 → 写入选定 URI；
+2. io.dart 平台接缝（仅 App.isOhos）：selectFile→openDocument、
+   selectDirectory/pickDirectory→pickDirectory、saveFile→saveDocument；
+   删除设置页昨日临时弹窗分支（现统一走系统选择器）。
+
+### 覆盖清单（全部自动生效）
+- 导入漫画源(.js)、导入本地漫画(cbz/zip/7z/db)、导入备份(.venera)、
+  收藏导出(json)；导出备份、保存封面/阅读器图片/日志——全部改走系统 Picker。
+
+### 真机验证
+- 插件注册日志确认：VeneraFilePickerPlugin onAttachedToEngine +
+  channel 'venera/ohos_file' handler 就绪；
+- 设置-应用-设置新存储路径 触发后，系统 filePicker/FileMgr 进程被拉起
+  （日志实证），文件夹选择器正常工作；
+- ArkTS 编译踩坑记录：AbilityPluginBinding.getActivity → getAbility().context；
+  fs.fstatSync 不存在（用默认缓冲）；openSync 返回 File，写操作需 .fd。
+
+### 已知边界
+- 外部目录 URI 无法直接用于 dart:io，选中外部目录时回退到应用公共
+  Download 目录（系统可见）；理想情况为将来把 LocalManager 迁到
+  URI/文件描述符模型。
+
+## 六、用户测试第二轮问题修复
+
+### 1. 导入/存储路径的 Map cast 崩溃（已修）
+- 现象：openDocument/pickDirectory 复制/选择成功，但 Dart 侧
+  _ohosOpenDocument/_ohosPickDirectory 用 invokeMethod<String?>
+  强转 {path} Map → 抛 "type error in type cast" → 导入静默失败退回、
+  存储路径设置不生效（曾用日志精确定位 3 次）；
+- 修复：两函数改为 invokeMethod<Map> 并解包 ['path']。
+
+### 2. 存储路径报"Directory is not empty"（已修）
+- 现象：即使选择刚新建的空目录也报非空；
+- 处置：OHOS picker 返回的目标目录由我方新建绝对可控——setNewPath
+  对 App.isOhos 跳过 list().isEmpty 非空校验；并把回退目录改名为
+  venera_storage（全新命名，避免历史残留）。
+
+### 3. 重装丢数据说明
+- HarmonyOS 卸载会清空应用数据（30 源/历史）；覆盖安装(bm install
+  同签名)保留数据；数据备份/恢复走 WebDAV 同步。
+
+### 4. 其他观察
+- url_launcher_ohos 打开 GitHub 帮助链接报 ACTIVITY_NOT_FOUND
+  （系统无法处理 https 意图，非移植缺陷，待后续处理）。
+
+### 5. 存储路径最终确认成功（日志实证）
+- setNewPath: newPath=/data/storage/el2/base/haps/entry/files/venera_storage → ok, wrote local_path=...（local_path 持久化写入）；
+- 用户手动验证后 UI 将显示新路径；此后导入 CBZ 应写入该目录；
+- 此前"导入未出现在设置路径"因为当时 setNewPath 非空校验失败，已修复。
+
+### 6. 历史记录封面加载失败（网络层，非移植缺陷）
+- 日志：HistoryImageProvider.load → DioException Connection terminated
+  during handshake（海外源站 CDN 握手被重置）；
+- 结论：历史数据（条目/阅读进度/封面 URL）存于 sqlite 正常，
+  仅缩略图网络拉取受大陆网络环境影响（换网/换源可验证），
+  与 Windows/Android 版行为一致。
+
+### 7. 导入 CBZ 未写入存储路径的根因与修复
+- 根因：ImportComic.cbz/multipleCbz 调 registerComics(imported, **false**)
+  ——硬编码"不复制"，即导入后漫画始终引用解压缓存路径，从不写入
+  LocalManager().path（用户勾选的"复制到本地文件夹"被忽略）；原版
+  各平台行为同样如此，但用户在鸿蒙版优先体验到目录为空；
+- 修复：cbz()/multipleCbz() 改传 copyToLocal（UI 选项，默认 true），
+  复制语义生效：_copyComicsToLocalDir 把漫画拷贝进 venera_storage 后
+  入库；ehViewer() 保持 false（引用原库，避免海量复制）。
+
+### 8. 导入链路最终全通（用户确认"成功了"）
+- 修复链：Map cast → copyToLocal 语义 → 复制失败兜底（保留原引用入库，
+  不静默丢弃）；
+- 真机验证日志实证：_copyDirectories 执行（"Directory already exists"
+  → rename → copy），register 正常；
+- 现场：本地漫画列表出现导入漫画 ✓；
+- 遗留观察：F. 'ohos_surface_vulkan_impeller SetPresentInfo failed'
+  持续刷屏（渲染层告警，App 可正常运行，暂不致命，收入待查）；
+  G. venera 日志与引擎噪音混排，hilog ring buffer 易轮转
+  ——后续排查优先用设置-应用-导出日志(logs.txt)。

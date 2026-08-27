@@ -4,7 +4,7 @@
 #define MyAppName "Venera"
 #define MyAppVersion "{{version}}"
 #define MyAppPublisher "nyne"
-#define MyAppURL "https://github.com/venera-app/venera"
+#define MyAppURL "https://github.com/Leif-Wang-021/venera"
 #define MyAppExeName "venera.exe"
 #define RootPath "{{root_path}}"
 
@@ -42,9 +42,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#RootPath}\build\windows\arm64\runner\Release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#RootPath}\build\windows\arm64\runner\Release\flutter_inappwebview_windows_plugin.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#RootPath}\build\windows\arm64\runner\Release\file_selector_windows_plugin.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#RootPath}\build\windows\arm64\runner\Release\app_links_plugin.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#RootPath}\build\windows\arm64\runner\Release\sqlite3.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#RootPath}\build\windows\arm64\runner\Release\sqlite3_flutter_libs_plugin.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#RootPath}\build\windows\arm64\runner\Release\flutter_windows.dll"; DestDir: "{app}"; Flags: ignoreversion
