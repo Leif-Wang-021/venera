@@ -86,7 +86,7 @@ class _AboutSettingsState extends State<AboutSettings> {
 
 Future<bool> checkUpdate() async {
   var res = await AppDio()
-      .get("https://cdn.jsdelivr.net/gh/Leif-Wang-021/venera@main/pubspec.yaml");
+      .get("https://cdn.jsdelivr.net/gh/Leif-Wang-021/venera@main/venera/pubspec.yaml");
   if (res.statusCode == 200) {
     var data = loadYaml(res.data);
     if (data["version"] != null) {
