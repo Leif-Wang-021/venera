@@ -1,7 +1,7 @@
 # venera（Venera 优化版）
 
 [![flutter](https://img.shields.io/badge/flutter-3.41.4-blue)](https://flutter.dev/)
-[![License](https://img.shields.io/github/license/Leif-Wang-021/venera)](https://github.com/Leif-Wang-021/venera/blob/master/LICENSE)
+[![License](https://img.shields.io/github/license/Leif-Wang-021/venera)](https://github.com/Leif-Wang-021/venera/blob/main/LICENSE)
 [![stars](https://img.shields.io/github/stars/Leif-Wang-021/venera?style=flat)](https://github.com/Leif-Wang-021/venera/stargazers)
 
 [![Download](https://img.shields.io/github/v/release/Leif-Wang-021/venera)](https://github.com/Leif-Wang-021/venera/releases)

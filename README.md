@@ -2,7 +2,7 @@
 
 A comic reader that supports reading local and network comics.
 
-[![License](https://img.shields.io/github/license/Leif-Wang-021/venera)](https://github.com/Leif-Wang-021/venera/blob/master/LICENSE)
+[![License](https://img.shields.io/github/license/Leif-Wang-021/venera)](https://github.com/Leif-Wang-021/venera/blob/main/LICENSE)
 [![stars](https://img.shields.io/github/stars/Leif-Wang-021/venera?style=flat)](https://github.com/Leif-Wang-021/venera/stargazers)
 [![Download](https://img.shields.io/github/v/release/Leif-Wang-021/venera)](https://github.com/Leif-Wang-021/venera/releases)
 
