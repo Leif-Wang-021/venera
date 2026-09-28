@@ -1,0 +1,66 @@
+# Venera 产品开发日志 · 2026-09-28
+
+> 规则：先读当日/历史日志；文件不存在则创建，存在则追加。
+> 本日新建；开发内容为“下载系统架构梳理 + 移植文档”。
+
+---
+
+## 一、本次任务
+
+用户要求：描述整个下载系统，用于移植到其他 Flutter 项目，并包含本下载系统针对 HarmonyOS / OHOS 的优化。
+
+## 二、本次产出
+
+新增文档：
+
+- `F:\DeepSeek_Project\Venera\doc\venera-download-system.md`
+
+内容覆盖：
+
+1. 分层架构：表现层 / 任务层 / 管线层 / 网络层 / 存储层。
+2. 一次完整下载的生命周期（任务创建 → 恢复 → 封面 → 列表/下载两阶段并行 → 完成入库）。
+3. 任务模型 `DownloadTask` / `ImagesDownloadTask` / `ArchiveDownloadTask` 与 `downloading_tasks.json` 持久化格式。
+4. 两阶段交接门 `chapter_ready_gate.dart`（纯 Dart，可直接移植）。
+5. 图片列表自适应并发控制器 `fetch_concurrency_controller.dart`：
+   - NORMAL / PROBING / BACKOFF 状态机；
+   - BURST / CRUISE 发起节奏器（`bookStartSlot` / `noteStart` / `_wMs`）；
+   - epoch 隔离旧请求、pause-only 与裁撤分流、探测失败安家。
+6. 图片下载阶段 `_ImageDownloadWrapper`：
+   - retry=4，指数退避 + 抖动（0.8s→1.6s→3.2s→6.4s，封顶 8s）；
+   - 404/410 死链刷新签名 URL，列表不变则快速失败；
+   - 连续 5 张死链跳章；
+   - 下载时 `writeCache: false`，避免重复写盘。
+7. 网络层 `AppDio`：
+   - 非 OHOS 走 `RHttpAdapter` 连接池（按设置签名复用，上限 6，LRU）；
+   - 拦截器链 Cookie → NetworkCache → Cloudflare → 日志；
+   - NetworkCache 只缓存 200 且 210 绝不入缓存；
+   - 代理 / DNS Overrides / TLS 设置。
+8. 图片获取层 `ImageDownloader`：缩略图/阅读器/下载三种入口，`onLoadFailed` / `onResponse` / `modifyImage` JS 钩子。
+9. 本地存储 `LocalManager`：目录布局、章节名净化、任务队列（只有队首跑）、取消删目录（3 次重试）、章节删除。
+10. 归档下载 `ArchiveDownloadTask` + `FileDownloader`：HEAD 取大小、16/32/64MB 分块、Range 断点续传、`.download` 状态文件。
+11. UI 与遥测：速度聚合、`[speed]` / `[io]` / `[fetch-cc]` / `Chapter finished` / `Task finished` 日志，headless `dlbench/dltask/fetchbench`。
+12. OHOS 专项适配：
+    - `App.isOhos` 判定；`App.isMobile` 不含 OHOS 的注意点；
+    - `AppDio` 回退 `IOHttpClientAdapter`，坏证书在 OHOS 默认放行；
+    - `init.dart` + `sqlite_isolate_init.dart` 的 `libvenerasqlite3.so` 注册（含 Isolate）；
+    - 沙箱存储路径、`setNewPath` 跳过空目录校验；
+    - `venera/ohos_file` MethodChannel 系统 Picker；
+    - 大文件导出走 `saveFileFromPath`，避免 base64 OOM；
+    - `VeneraFilePickerPlugin.ets`（DocumentViewPicker / DocumentSaveOptions / 公共 Download 回退）；
+    - `ohos/entry/src/main/cpp/CMakeLists.txt` 原生库：qjs / sqlite3 / zip_flutter / lodepng / flutter_7zip；
+    - `dependency_overrides` 指向 `ohos_plugins/`。
+13. 移植清单：可复制文件、需替换符号、依赖、平台矩阵、移植顺序、验证方法、调优参数、已知坑。
+
+## 三、关键结论
+
+- 下载慢的主因不是带宽，而是：串行列表抓取、每图写任务 JSON、下载重复写缓存、每请求重新 TLS 握手；这些已分别被并行列表、写盘节流、`writeCache:false`、rhttp 连接池解决。
+- 源站限流需要“自适应并发 + 发起节奏器”，不能只靠固定低并发。
+- OHOS 的核心差异是：rhttp 不可用、sqlite 需自带 .so 并在 Isolate 重新注册、存储沙箱无任意目录 API、原生库需自行编译。
+
+## 四、相关文件与提交
+
+- 新增：`doc/venera-download-system.md`
+- 提交信息：`docs: 新增下载系统架构与移植指南（含 OHOS 专项）`
+- 历史下载相关提交（供追溯）：`5fc5bbd`（连接池）、`b748b67`（指数退避）、`5ad95fe`（过期签名 URL 刷新 + 死链快败）、`eb64845`（死链跳章）、`abe6110`（取消删目录 + 两阶段并行）、`ff51eb4`（BURST/CRUISE 节奏器）、`be7305e`（速度聚合 + 日志开销关闭）。
+
+_下次开发先读本文件；下载系统细节见 `doc/venera-download-system.md`。_
