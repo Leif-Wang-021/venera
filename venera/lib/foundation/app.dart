@@ -33,9 +33,14 @@ class _App {
   bool get isMacOS => Platform.isMacOS;
 
   bool get isDesktop =>
+      // HarmonyOS phones/tablets/2in1 are handled with the mobile-class UI:
+      // bottom navigation, touch interactions and cutout insets. Treating OHOS
+      // as desktop would wrongly attach the (window_manager based) desktop
+      // title bar, which has no OHOS implementation and crashes on launch.
       Platform.isWindows || Platform.isLinux || Platform.isMacOS;
 
-  bool get isMobile => Platform.isAndroid || Platform.isIOS;
+  bool get isMobile =>
+      Platform.isAndroid || Platform.isIOS || Platform.operatingSystem == 'ohos';
 
   // Whether the app has been initialized.
   // If current Isolate is main Isolate, this value is always true.

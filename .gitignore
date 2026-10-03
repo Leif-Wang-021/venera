@@ -41,3 +41,15 @@ oh-package-lock.json5
 
 # ---- local debug tools ----
 /tools/procdump.exe
+
+# ---- 本地工作记录与临时目录 ----
+# 历史 log/ 下已入库的开发记录保持跟踪；此后新增的日志不再入库
+log/
+# 临时输出目录
+out/
+/.v2c/
+
+# ---- 定期清理 ----
+# 可重建构建产物的清理入口（默认 dry-run）：
+#   pwsh scripts/clean_artifacts.ps1            # 预览
+#   pwsh scripts/clean_artifacts.ps1 -Execute   # 归档发布包到 dist/ 后清理

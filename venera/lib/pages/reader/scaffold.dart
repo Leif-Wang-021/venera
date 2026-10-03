@@ -414,7 +414,7 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
             },
           ),
         ),
-      if (App.isAndroid)
+      if (App.isAndroid || App.isOhos)
         Tooltip(
           message: "Screen Rotation".tl,
           child: IconButton(

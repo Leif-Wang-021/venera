@@ -2,7 +2,7 @@
 ; SEE THE DOCUMENTATION FOR DETAILS ON CREATING INNO SETUP SCRIPT FILES!
 
 #define MyAppName "Venera"
-#define MyAppVersion "1.7.0"
+#define MyAppVersion "1.7.1"
 #define MyAppPublisher "nyne"
 #define MyAppURL "https://github.com/venera-app/venera"
 #define MyAppExeName "venera.exe"
